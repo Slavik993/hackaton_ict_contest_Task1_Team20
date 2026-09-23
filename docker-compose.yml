@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  robo-platform:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=roboplatform-hackathon-2026-secret-key
+    volumes:
+      - ./data:/app/data
+      - ./public/uploads:/app/public/uploads
+    restart: unless-stopped
