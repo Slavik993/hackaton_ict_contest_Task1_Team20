@@ -15,9 +15,5 @@ services:
         value: 10000
       - key: NODE_VERSION
         value: 20
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
 
 databases: []
