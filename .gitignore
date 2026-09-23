@@ -1,0 +1,10 @@
+node_modules/
+data/platform.db
+data/platform.db-wal
+data/platform.db-shm
+public/uploads/*
+.env
+.DS_Store
+*.log
+data/video-frames/
+tmp_frames/

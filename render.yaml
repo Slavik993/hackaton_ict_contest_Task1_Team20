@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: robo-visual
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: NODE_VERSION
+        value: 20
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+
+databases: []
