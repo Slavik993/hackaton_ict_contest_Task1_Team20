@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const isProduction = process.env.NODE_ENV === 'production';
 const dbPath = isProduction
-  ? '/data/platform.db'
+  ? path.join(process.cwd(), 'platform.db')
   : path.join(__dirname, '..', 'data', 'platform.db');
 
 function initDb() {
