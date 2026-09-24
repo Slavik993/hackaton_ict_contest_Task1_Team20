@@ -169,8 +169,8 @@ function calcScenario(params, solution, scenarioType) {
   // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
   // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
   if (isMedicalDomain) {
-    laborReduction *= 0.35;      // было 0.6 — слишком мягко
-    productivityLift *= 0.30;    // было 0.5
+    laborReduction *= 0.25;      // сильно режем (было 0.6 / 0.35)
+    productivityLift *= 0.20;
   } else if (isFarmDomain) {
     laborReduction *= 0.85; productivityLift *= 0.8;
   } else if (isConstructionDomain) {
@@ -251,7 +251,8 @@ function calcScenario(params, solution, scenarioType) {
   const adjustedCapex = totalCapex * infraAdjustment;
   const annualService = robotCount * serviceCostPerMonth * 12 * (p.serviceRatio !== undefined ? (1 + p.serviceRatio) : 1);
   const annualLicenses = equipmentCost * (p.licenseRatio !== undefined ? p.licenseRatio : defaults.licenseRatio);
-  const annualElectricity = area * (electricityRate || 0) * 12 + robotCount * powerKw * 8 * workingDays * 0.05;
+  // Электричество только роботов (эксплуатация здания уже в base OPEX)
+  const annualElectricity = robotCount * powerKw * effectiveHoursPerDay * workingDays * (p.energyTariff !== undefined ? p.energyTariff : defaults.energyTariff || 6.5);
   const annualMaterials = equipmentCost * (p.materialRatio !== undefined ? p.materialRatio : defaults.materialRatio);
   const annualRepair = equipmentCost * (p.repairRatio !== undefined ? p.repairRatio : defaults.repairRatio) / p.depreciationYears;
   const annualManagement = equipmentCost * (p.managementRatio !== undefined ? p.managementRatio : defaults.managementRatio);
@@ -312,12 +313,18 @@ function calcScenario(params, solution, scenarioType) {
     roi = (cumulativeEffect / adjustedCapex) * 100;           // ROI на полном горизонте
     const cumulativeNet3 = annualNet * Math.min(3, horizon);
     roi3y = (cumulativeNet3 / adjustedCapex) * 100;          // ROI за 3 года (для UI)
+    if (!isFinite(roi)) roi = 0;
+    if (!isFinite(roi3y)) roi3y = 0;
   }
 
   // Медицинский потолок: клиническая роботизация редко даёт 300%+
   if (isMedicalDomain) {
-    roi = Math.min(roi, 180);
-    roi3y = Math.min(roi3y, 80);
+    roi = Math.min(roi, 160);
+    roi3y = Math.min(roi3y, 90);
+    // Защита от «мгновенной» окупаемости (< 2.5 лет) при чрезмерной экономии
+    if (payback > 0 && payback < 2.5) payback = 2.5;
+    // Нижняя граница: клиническая роботизация редко окупается быстрее 3 лет
+    if (payback > 0 && payback < 3.0) payback = 3.0;
   }
 
   let tco = adjustedCapex;

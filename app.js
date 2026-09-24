@@ -1034,8 +1034,8 @@ function calcScenarioLocal(params, solution) {
   // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
   // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
   if (isMedicalDomain) {
-    laborReduction *= 0.35;      // было 0.6 — слишком мягко
-    productivityLift *= 0.30;    // было 0.5
+    laborReduction *= 0.25;      // сильно режем (было 0.6 / 0.35)
+    productivityLift *= 0.20;
   } else if (isFarmDomain) {
     laborReduction *= 0.85; productivityLift *= 0.8;
   } else if (isConstructionDomain) {
@@ -1053,8 +1053,8 @@ function calcScenarioLocal(params, solution) {
   var depreciationYears = Math.max(1, safeFloat(p.depreciationYears, 5));
   var horizon = Math.max(1, safeFloat(p.horizon, 5));
   var discountRate = safeFloat(p.discountRate, 10) / 100;
-  var availability = clamp(safeFloat(p.robotAvailability, 95) / 100, 0.05, 1);
-  var utilization = clamp(safeFloat(p.robotUtilization, 85) / 100, 0.05, 1);
+  var availability = clamp(safeFloat(p.robotAvailability, isMedicalDomain ? 90 : 95) / 100, 0.05, 1);
+  var utilization = clamp(safeFloat(p.robotUtilization, isMedicalDomain ? 55 : 85) / 100, 0.05, 1);
   var energyTariff = safeFloat(p.energyTariff, 6.5);
   var infraRatio = safeFloat(p.infrastructureRatio, 0.15);
   var softwareRatio = safeFloat(p.softwareRatio, 0.10);
@@ -1110,7 +1110,7 @@ function calcScenarioLocal(params, solution) {
 
   var annualService = robotCount * serviceCostPerMonth * 12 * (1 + serviceRatio);
   var annualLicenses = equipmentCost * licenseRatio;
-  var annualElectricity = area * electricityRate * 12 + robotCount * powerKw * totalHoursPerYear * energyTariff;
+  var annualElectricity = robotCount * powerKw * totalHoursPerYear * energyTariff;
   var annualMaterials = equipmentCost * materialRatio;
   var annualRepair = equipmentCost * repairRatio / depreciationYears;
   var annualManagement = equipmentCost * managementRatio;
@@ -1157,12 +1157,16 @@ var laborSavings = annualLaborCost * laborReduction;
     var cumulativeNet3 = annualNet * Math.min(3, horizon);
     roi3y = (cumulativeNet3 / totalCapex) * 100;        // ROI за 3 года (для UI)
     roiHorizon = roi;
+    if (!isFinite(roi3y)) roi3y = 0;
+    if (!isFinite(roiHorizon)) roiHorizon = 0;
   }
 
-  // Медицинский потолок, чтобы не было 700+%
+// Медицинский потолок, чтобы не было 700+%
   if (isMedicalDomain) {
-    roi = Math.min(roi, 180);      // максимум ~180% на горизонте 5–7 лет
-    roi3y = Math.min(roi3y, 80);   // за 3 года редко выше 50–80%
+    roi = Math.min(roi, 160);      // максимум ~160% на горизонте 5–7 лет
+    roi3y = Math.min(roi3y, 90);   // за 3 года редко выше 50–90%
+    // Нижняя граница: клиническая роботизация редко окупается быстрее 3 лет
+    if (payback > 0 && payback < 3.0) payback = 3.0;
   }
 
   var npv = -totalCapex;
@@ -1414,14 +1418,14 @@ function buildScenarioComparisonTable(results) {
     { name: 'Кредит', data: sc.loanScenario, showLoanDetails: true },
   ];
 
-  var columns = [
-    { key: 'capex', label: 'CAPEX', unit: '₽', format: 'currency', primary: true },
-    { key: 'opex', label: 'OPEX/год', unit: '₽', format: 'currency' },
-    { key: 'savings', label: 'Экономия', unit: '₽', format: 'currency' },
-    { key: 'netAnnual', label: 'Чистый эффект', unit: '₽', format: 'currency' },
-    { key: 'payback', label: 'Срок окуп.', unit: 'лет', format: 'currency' },
-    { key: 'roi', label: 'ROI за 3 года', unit: '%', format: 'percent' },
-    { key: 'robotCount', label: 'Роботы', unit: 'шт.', format: 'number' },
+var columns = [
+    { key: 'capex',      label: 'CAPEX',         format: 'currency' },
+    { key: 'opex',       label: 'OPEX/год',      format: 'currency' },
+    { key: 'savings',    label: 'Экономия',      format: 'currency' },
+    { key: 'netAnnual',  label: 'Чистый эффект', format: 'currency' },
+    { key: 'payback',    label: 'Срок окуп.',    format: 'years' },
+    { key: 'roi',        label: 'ROI за 3 года', format: 'percent' },
+    { key: 'robotCount', label: 'Роботы',        format: 'number' },
   ];
 
   var html = '<div class="scenario-comparison" style="margin-top:24px">';
@@ -1447,15 +1451,17 @@ function buildScenarioComparisonTable(results) {
         else if (val > 10 || val < 0) cls = 'negative';
         else cls = 'warning';
       }
-      var display;
+var display;
       if (col.format === 'currency') {
         display = formatCurrency(val);
       } else if (col.format === 'percent') {
         display = formatNum(val, 1) + ' %';
+      } else if (col.format === 'years') {
+        display = (val > 0 && isFinite(val)) ? formatNum(val, 1) + ' лет' : '—';
       } else if (col.format === 'number') {
-        display = formatNum(val, 0) + ' ' + col.unit;
+        display = formatNum(val, 0) + ' шт.';
       } else {
-        display = val > 0 ? formatNum(val, 1) + ' ' + col.unit : '—';
+        display = '—';
       }
       if (col.key === 'capex' && s.data.model === 'base') display = '—';
       if (col.key === 'payback' && s.data.model === 'base') display = '—';
@@ -1539,17 +1545,27 @@ function resultItem(label, baseScenario, purchase, raas, loan) {
   var valKey = keys[label] || 'value';
   var primary = purchase || scenarios[scenarios.length - 1];
   var baseline = baseScenario || primary;
-  var value = primary ? primary[valKey] : 0;
-  var baseValue = baseline ? baseline[valKey] : 0;
+  var value = primary ? (primary[valKey] != null ? primary[valKey] : primary.totalCapex) : 0;
+  var baseValue = baseline ? (baseline[valKey] != null ? baseline[valKey] : 0) : 0;
   var display = '—';
   var cls = '';
 
   if (valKey === 'capex' || valKey === 'opex' || valKey === 'savings' || valKey === 'netAnnual' || valKey === 'npv' || valKey === 'tco' || valKey === 'co2') {
-    display = label === 'Снижение CO₂' ? formatNum(value, 1) + ' т/год' : formatCurrency(value);
+    // CAPEX базового сценария = 0 → показываем прочерк только для base
+    if (valKey === 'capex' && primary && primary.model === 'base' && label === 'CAPEX') {
+      // Берём значение покупки
+      value = (purchase && (purchase.capex || purchase.totalCapex)) || 0;
+      display = value > 0 ? formatCurrency(value) : '—';
+    } else {
+      display = formatCurrency(value);
+    }
+  } else if (valKey === 'co2') {
+    display = formatNum(value, 1) + ' т/год';
   } else if (valKey === 'roi') {
     display = formatNum(value, 1) + ' %';
   } else if (valKey === 'payback') {
-    display = value > 0 ? formatNum(value, 1) + ' лет' : '—';
+    // ВАЖНО: payback — это ГОДЫ, не рубли!
+    display = (value > 0 && isFinite(value)) ? formatNum(value, 1) + ' лет' : '—';
   } else if (valKey === 'robotCount') {
     display = formatNum(value, 0) + ' шт.';
   }
@@ -1558,11 +1574,16 @@ function resultItem(label, baseScenario, purchase, raas, loan) {
     cls = value >= 0 ? 'positive' : 'negative';
   }
   if (valKey === 'payback') {
-    cls = value > 0 && value <= 3 ? 'positive' : value > 10 ? 'negative' : 'warning';
+    cls = value > 0 && value <= 3 ? 'positive' : (value > 10 || value <= 0) ? 'negative' : 'warning';
   }
-  if (valKey === 'capex' && baseline.model === 'base') display = '—';
 
-  var detail = valKey === 'capex' && baseline.model === 'base' ? 'Проектный CAPEX' : formatCurrency(baseValue) + ' → ' + formatCurrency(value);
+  var detail = '';
+  if (valKey === 'capex') {
+    detail = 'Проектный CAPEX';
+  } else if (baseline && primary && valKey !== 'payback' && valKey !== 'robotCount') {
+    detail = formatCurrency(baseValue) + ' → ' + formatCurrency(value);
+  }
+
   return '<div class="result-item"><div class="result-label">' + label + '</div><div class="result-value ' + cls + '">' + display + '</div><div class="result-detail">' + detail + '</div></div>';
 }
 

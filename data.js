@@ -126,7 +126,7 @@ const HACKATHON_DATA = {
           defaults: {
             area: 45000,
             operations: 1950,
-            staff: 65,
+            staff: 55,
             salary: 55000,
             shifts: 3,
             workingDays: 365,
