@@ -454,7 +454,10 @@ function parseCatalogCsv(filePath) {
         else if (typeId === 'stationary') implMonths = 12;
         else if (typeId === 'manipulator') implMonths = 8;
 
-        // Estimate labor_reduction and productivity_lift based on type
+        // Estimate labor_reduction and productivity_lift based on type.
+        // Base values are domain-neutral (logistics/industrial benchmark).
+        // Domain correction is applied at calculation time (calculation.js)
+        // so that social/medical payback matches Таблица 1 (3-7 years).
         let laborReduction = null;
         let productivityLift = null;
         if (typeId === 'mobile' || typeId === 'agv') {

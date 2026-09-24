@@ -19,6 +19,17 @@ const defaults = {
   loanInterestRate: 0.12,
   loanTermYears: 5,
   loanDownPaymentRatio: 0.20,
+  // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
+  medical: {
+    horizon: 7,
+    depreciationYears: 7,
+    robotUtilization: 0.55,
+    robotAvailability: 0.90,
+    infrastructureRatio: 0.20,
+    integrationRatio: 0.20,
+    trainingRatio: 0.08,
+    serviceRatio: 0.12,
+  },
 };
 
 function calcLoanScenario(params, solution, purchaseScenario) {
@@ -122,6 +133,54 @@ function calcScenario(params, solution, scenarioType) {
   const p = { ...defaults, ...params };
   const m = solution.metrics || {};
 
+  // Domain correction multipliers for labor/productivity effect.
+  // Logistics/industrial solutions assume high repeatable throughput; in the
+  // social/medical sector clinical workflows are safety-critical and non-repeatable,
+  // so the achievable labor reduction is much lower (payback 3-7 years, not 3).
+  const objType = String(p.objectType || p.objectTypeName || p.object_type || '').toLowerCase();
+  const industry = String(p.industry || p.industryId || p.industryName || '').toLowerCase();
+
+  const isMedicalDomain =
+    objType.includes('мед') || objType.includes('medical') || objType.includes('больниц') ||
+    objType.includes('реабил') || objType.includes('клиник') || objType.includes('hospital') ||
+    industry.includes('социал') || industry.includes('мед') || industry.includes('zdрав') ||
+    industry === 'social' || objType === 'medical';
+  const isFarmDomain = objType.includes('ферм') || objType.includes('farm') || industry.includes('сельск') || industry === 'agriculture';
+  const isConstructionDomain = objType.includes('строитель') || objType.includes('construction') || industry.includes('строитель') || industry === 'construction';
+  const isEnergyDomain = objType.includes('энерг') || objType.includes('energy') || industry.includes('тэк') || industry.includes('энерг') || industry === 'energy';
+  const isSecurityDomain = objType.includes('охран') || objType.includes('security') || industry.includes('безопасн') || industry === 'security';
+
+  // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
+  if (isMedicalDomain) {
+    const md = defaults.medical;
+    if (p.horizon === undefined || p.horizon === defaults.depreciationYears) p.horizon = md.horizon;
+    if (p.depreciationYears === undefined || p.depreciationYears === defaults.depreciationYears) p.depreciationYears = md.depreciationYears;
+    if (p.infrastructureRatio === undefined || p.infrastructureRatio === defaults.infrastructureRatio) p.infrastructureRatio = md.infrastructureRatio;
+    if (p.integrationRatio === undefined || p.integrationRatio === defaults.integrationRatio) p.integrationRatio = md.integrationRatio;
+    if (p.trainingRatio === undefined || p.trainingRatio === defaults.trainingRatio) p.trainingRatio = md.trainingRatio;
+    if (p.serviceRatio === undefined || p.serviceRatio === defaults.serviceRatio) p.serviceRatio = md.serviceRatio;
+    if (p.robotUtilization === undefined || p.robotUtilization === defaults.robotUtilization) p.robotUtilization = md.robotUtilization;
+    if (p.robotAvailability === undefined || p.robotAvailability === defaults.robotAvailability) p.robotAvailability = md.robotAvailability;
+  }
+
+  let laborReduction = m.laborReduction || 0;
+  let productivityLift = m.productivityLift || 0;
+
+  // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
+  // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
+  if (isMedicalDomain) {
+    laborReduction *= 0.35;      // было 0.6 — слишком мягко
+    productivityLift *= 0.30;    // было 0.5
+  } else if (isFarmDomain) {
+    laborReduction *= 0.85; productivityLift *= 0.8;
+  } else if (isConstructionDomain) {
+    laborReduction *= 0.9; productivityLift *= 0.85;
+  } else if (isEnergyDomain) {
+    laborReduction *= 0.9; productivityLift *= 0.85;
+  } else if (isSecurityDomain) {
+    laborReduction *= 0.85; productivityLift *= 0.8;
+  }
+
   const operations = p.operations || 0;
   const workingDays = p.workingDays || 250;
   const shifts = p.shifts || 1;
@@ -137,10 +196,7 @@ function calcScenario(params, solution, scenarioType) {
   const serviceCostPerMonth = m.serviceCostPerMonth || 0;
   const powerKw = m.powerKw || 0;
   const payload = m.payload || 0;
-  const laborReduction = m.laborReduction || 0;
-  const productivityLift = m.productivityLift || 0;
   const aut = m.autonomy || 0;
-
   const floorFlatness = p.floorFlatness || 0;
   const noiseLevelDb = p.noiseLevelDb || 0;
   const chargingPowerKw = p.chargingPowerKw || 0;
@@ -155,8 +211,20 @@ function calcScenario(params, solution, scenarioType) {
     robotCount = Math.max(1, Math.ceil(operations / annualThroughputRobot));
   }
 
-  const availability = p.robotAvailability !== undefined ? p.robotAvailability : defaults.robotAvailability;
-  const utilization = p.robotUtilization !== undefined ? p.robotUtilization : defaults.robotUtilization;
+  const availability = p.robotAvailability !== undefined
+    ? (typeof p.robotAvailability === 'number' && p.robotAvailability > 1 ? p.robotAvailability / 100 : p.robotAvailability)
+    : defaults.robotAvailability;
+  let utilization = p.robotUtilization !== undefined
+    ? (typeof p.robotUtilization === 'number' && p.robotUtilization > 1 ? p.robotUtilization / 100 : p.robotUtilization)
+    : defaults.robotUtilization;
+
+  // Клиническая загрузка заметно ниже складской (подготовка пациентов, слоты, дезинформация)
+  if (isMedicalDomain && p.robotUtilization === undefined) {
+    utilization = 0.55;
+  }
+  if (isMedicalDomain && p.robotAvailability === undefined) {
+    availability = 0.90;
+  }
 
   let infraAdjustment = 1.0;
   if (floorFlatness > 0 && floorFlatness > 3) infraAdjustment *= 1.05;
@@ -237,9 +305,19 @@ function calcScenario(params, solution, scenarioType) {
   }
 
   let roi = 0;
+  let roi3y = 0;
   if (adjustedCapex > 0) {
-    const cumulativeEffect = (annualSavings - totalAnnualOpex) * horizon;
-    roi = (cumulativeEffect / adjustedCapex) * 100;
+    const annualNet = annualSavings - totalAnnualOpex;
+    const cumulativeEffect = annualNet * horizon;
+    roi = (cumulativeEffect / adjustedCapex) * 100;           // ROI на полном горизонте
+    const cumulativeNet3 = annualNet * Math.min(3, horizon);
+    roi3y = (cumulativeNet3 / adjustedCapex) * 100;          // ROI за 3 года (для UI)
+  }
+
+  // Медицинский потолок: клиническая роботизация редко даёт 300%+
+  if (isMedicalDomain) {
+    roi = Math.min(roi, 180);
+    roi3y = Math.min(roi3y, 80);
   }
 
   let tco = adjustedCapex;
@@ -284,6 +362,8 @@ function calcScenario(params, solution, scenarioType) {
     payback: isFinite(payback) ? payback : -1,
     npv,
     roi,
+    roi3y,
+    roiHorizon: roi,
     tco,
     co2Reduction,
     horizon,
@@ -300,6 +380,7 @@ function calcScenario(params, solution, scenarioType) {
       floorFlatness,
       noiseLevelDb,
       chargingPowerKw,
+      domain: isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general')))),
     },
   };
 }
@@ -452,15 +533,22 @@ function sensitivityAnalysis(params, solution, baseMetric) {
 function calcAll(params, solution) {
   const base = calcBaseParams(params, solution);
   const baseScenario = calcBaseScenario(params);
-  const purchaseScenario = calcScenario({ ...params, model: 'purchase' }, solution);
-  const raasScenario = calcRaasScenario({
+  // Domain-aware params: carry object type / industry so the labor/productivity
+  // correction (social/medical payback 3-7 years, not 3) is applied consistently.
+  const domainParams = {
     ...params,
+    objectType: params.objectType || params.objectTypeName || params.object_type,
+    industry: params.industry || params.industryId || params.industryName,
+  };
+  const purchaseScenario = calcScenario({ ...domainParams, model: 'purchase' }, solution);
+  const raasScenario = calcRaasScenario({
+    ...domainParams,
     robotCount: purchaseScenario.robotCount,
     annualSavings: purchaseScenario.annualSavings,
   }, solution);
-  const loanScenario = calcLoanScenario(params, solution, purchaseScenario);
+  const loanScenario = calcLoanScenario(domainParams, solution, purchaseScenario);
 
-  const sensitivity = sensitivityAnalysis(params, solution);
+  const sensitivity = sensitivityAnalysis(domainParams, solution);
 
   return {
     base: base,
@@ -470,6 +558,7 @@ function calcAll(params, solution) {
     loanScenario,
     sensitivity,
     allParams: params,
+    domain: String(domainParams.objectType || domainParams.industry || ''),
     assumptions: {
       ...defaults,
       ...params,

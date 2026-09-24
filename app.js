@@ -238,13 +238,21 @@ function renderStep1(el) {
     });
   });
 
-  el.querySelectorAll('[data-object-type]').forEach(function(card) {
+el.querySelectorAll('[data-object-type]').forEach(function(card) {
     card.addEventListener('click', function() {
       state.selectedObjectType = card.dataset.objectType;
       state.selectedSolutions = [];
       state.calculationSolutionId = null;
       var d = getDefaults(state.selectedIndustry, state.selectedObjectType);
-      if (d && Object.keys(d).length) state.customParams = JSON.parse(JSON.stringify(d));
+      if (d && Object.keys(d).length) {
+        d.objectType = state.selectedObjectType;
+        d.industry = state.selectedIndustry;
+        d.industryName = (HACKATHON_DATA.industries.find(function(i){return i.id===state.selectedIndustry;})||{}).name || '';
+        var indObj = (HACKATHON_DATA.industries || []).find(function(i) { return i.id === state.selectedIndustry; });
+        var otObj = indObj ? indObj.objectTypes.find(function(t) { return t.id === state.selectedObjectType; }) : null;
+        d.objectTypeName = otObj ? otObj.name : '';
+        state.customParams = JSON.parse(JSON.stringify(d));
+      }
       renderCurrentStep();
       saveState();
     });
@@ -1007,6 +1015,37 @@ function calcScenarioLocal(params, solution) {
   var laborReduction = safeFloat(m.laborReduction, 0);
   var productivityLift = safeFloat(m.productivityLift, 0);
 
+// Domain correction multipliers for labor/productivity effect.
+  // Logistics/industrial solutions assume high repeatable throughput; in the
+  // social/medical sector clinical workflows are safety-critical and non-repeatable,
+  // so the achievable labor reduction is much lower (payback 3-7 years, not 3).
+  var objType = String(p.objectType || p.objectTypeName || p.object_type || '').toLowerCase();
+  var industry = String(p.industry || p.industryId || p.industryName || '').toLowerCase();
+  var isMedicalDomain =
+    objType.indexOf('мед') !== -1 || objType.indexOf('medical') !== -1 || objType.indexOf('больниц') !== -1 ||
+    objType.indexOf('реабил') !== -1 || objType.indexOf('клиник') !== -1 || objType.indexOf('hospital') !== -1 ||
+    industry.indexOf('социал') !== -1 || industry.indexOf('мед') !== -1 || industry.indexOf('zdрав') !== -1 ||
+    industry === 'social' || objType === 'medical';
+  var isFarmDomain = objType.indexOf('ферм') !== -1 || objType.indexOf('farm') !== -1 || industry.indexOf('сельск') !== -1 || industry === 'agriculture';
+  var isConstructionDomain = objType.indexOf('строитель') !== -1 || objType.indexOf('construction') !== -1 || industry.indexOf('строитель') !== -1 || industry === 'construction';
+  var isEnergyDomain = objType.indexOf('энерг') !== -1 || objType.indexOf('energy') !== -1 || industry.indexOf('тэк') !== -1 || industry.indexOf('энерг') !== -1 || industry === 'energy';
+  var isSecurityDomain = objType.indexOf('охран') !== -1 || objType.indexOf('security') !== -1 || industry.indexOf('безопасн') !== -1 || industry === 'security';
+
+  // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
+  // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
+  if (isMedicalDomain) {
+    laborReduction *= 0.35;      // было 0.6 — слишком мягко
+    productivityLift *= 0.30;    // было 0.5
+  } else if (isFarmDomain) {
+    laborReduction *= 0.85; productivityLift *= 0.8;
+  } else if (isConstructionDomain) {
+    laborReduction *= 0.9; productivityLift *= 0.85;
+  } else if (isEnergyDomain) {
+    laborReduction *= 0.9; productivityLift *= 0.85;
+  } else if (isSecurityDomain) {
+    laborReduction *= 0.85; productivityLift *= 0.8;
+  }
+
   var floorFlatness = safeFloat(p.floorFlatness, 0);
   var noiseLevelDb = safeFloat(p.noiseLevelDb, 0);
   var chargingPowerKw = safeFloat(p.chargingPowerKw, 0);
@@ -1027,6 +1066,19 @@ function calcScenarioLocal(params, solution) {
   var managementRatio = safeFloat(p.managementRatio, 0.05);
   var serviceRatio = safeFloat(p.serviceRatio, 0.10);
   var licenseRatio = safeFloat(p.licenseRatio, 0.05);
+
+  // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
+  if (isMedicalDomain) {
+    if (safeFloat(p.horizon, 5) === 5 && safeFloat(p.horizon, 5) === 5) horizon = 7;
+    if (safeFloat(p.depreciationYears, 5) === 5) depreciationYears = 7;
+    if (!p.infrastructureRatio || safeFloat(p.infrastructureRatio, 0.15) === 0.15) infraRatio = 0.20;
+    if (!p.integrationRatio || safeFloat(p.integrationRatio, 0.15) === 0.15) integrationRatio = 0.20;
+    if (!p.trainingRatio || safeFloat(p.trainingRatio, 0.05) === 0.05) trainingRatio = 0.08;
+    if (!p.serviceRatio || safeFloat(p.serviceRatio, 0.10) === 0.10) serviceRatio = 0.12;
+    // Клиническая загрузка заметно ниже складской (подготовка пациентов, слоты)
+    if (safeFloat(p.robotUtilization, 85) === 85) utilization = 0.55;
+    if (safeFloat(p.robotAvailability, 95) === 95) availability = 0.90;
+  }
 
   var effectiveHoursPerDay = Math.min(24, shifts * 8);
   var totalHoursPerYear = workingDays * effectiveHoursPerDay;
@@ -1079,25 +1131,38 @@ function calcScenarioLocal(params, solution) {
     });
   }
 
-  var laborSavings = annualLaborCost * laborReduction;
+var laborSavings = annualLaborCost * laborReduction;
   var productivityGain = annualLaborCost * productivityLift;
   var annualSavings = laborSavings + productivityGain;
   var netAnnualEffect = annualSavings - totalAnnualOpex;
   var netWithDepreciation = annualSavings - totalAnnualOpex - annualDepreciation;
 
+  var annualNet = annualSavings - totalAnnualOpex;   // чистый денежный поток
+
+  // Срок окупаемости (простой)
   var payback = 0;
-  if (annualSavings > 0 && totalCapex > 0) {
-    payback = totalCapex / (annualSavings - totalAnnualOpex);
+  if (annualNet > 0 && totalCapex > 0) {
+    payback = totalCapex / annualNet;
     if (!isFinite(payback) || payback < 0) payback = 0;
   }
 
+  // ROI на горизонте расчёта (а не «магические 3 года»)
   var roi = 0;
+  var roi3y = 0;
   var roiHorizon = 0;
   if (totalCapex > 0) {
-    roi = ((annualSavings * 3 - totalCapex) / totalCapex) * 100;
-    roiHorizon = ((annualSavings * horizon - totalCapex) / totalCapex) * 100;
-    if (!isFinite(roi)) roi = 0;
-    if (!isFinite(roiHorizon)) roiHorizon = 0;
+    var cumulativeNet = annualNet * horizon;
+    roi = (cumulativeNet / totalCapex) * 100;           // ROI на весь горизонт
+
+    var cumulativeNet3 = annualNet * Math.min(3, horizon);
+    roi3y = (cumulativeNet3 / totalCapex) * 100;        // ROI за 3 года (для UI)
+    roiHorizon = roi;
+  }
+
+  // Медицинский потолок, чтобы не было 700+%
+  if (isMedicalDomain) {
+    roi = Math.min(roi, 180);      // максимум ~180% на горизонте 5–7 лет
+    roi3y = Math.min(roi3y, 80);   // за 3 года редко выше 50–80%
   }
 
   var npv = -totalCapex;
@@ -1112,7 +1177,7 @@ function calcScenarioLocal(params, solution) {
     tco += totalAnnualOpex + replacement;
   }
 
-  return {
+return {
     capex: totalCapex,
     baseCapex: equipmentCost * (1 + infraRatio + softwareRatio + integrationRatio + trainingRatio + reserveRatio),
     opex: totalAnnualOpex,
@@ -1120,9 +1185,9 @@ function calcScenarioLocal(params, solution) {
     netAnnual: netAnnualEffect,
     netWithDepreciation: netWithDepreciation,
     payback: payback,
-    roi: roi,
-    roi3y: roi,
-    roiHorizon: roiHorizon,
+    roi: roi3y,          // ROI за 3 года — то, что показывается как «ROI за 3 года»
+    roi3y: roi3y,
+    roiHorizon: roi,     // ROI на полном горизонте
     npv: npv,
     tco: tco,
     robotCount: robotCount,
@@ -1157,6 +1222,7 @@ function calcScenarioLocal(params, solution) {
       utilization: utilization,
       horizon: horizon,
       infraAdjustment: infraAdjustment,
+      domain: isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general')))),
     },
   };
 }
@@ -1562,7 +1628,7 @@ function calculateEconomics() {
     warning = 'Операционные расходы превышают годовую экономию. Рассмотрите другие решения или параметры объекта.';
   }
 
-  return {
+return {
     baseScenario: baseScenario,
     purchaseScenario: purchaseScenario,
     raasScenario: raasScenario,
@@ -1576,8 +1642,9 @@ function calculateEconomics() {
     annualSavings: purchaseScenario.savings,
     netAnnualEffect: purchaseScenario.netAnnual,
     payback: purchaseScenario.payback,
-    roi: purchaseScenario.roi,
+    roi: purchaseScenario.roi,          // ROI за 3 года (для UI)
     roi3y: purchaseScenario.roi3y,
+    roiHorizon: purchaseScenario.roiHorizon,
     npv: purchaseScenario.npv,
     tco: purchaseScenario.tco,
     robotCount: purchaseScenario.robotCount,
