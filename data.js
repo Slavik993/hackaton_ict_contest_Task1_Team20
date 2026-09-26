@@ -145,8 +145,8 @@ const HACKATHON_DATA = {
             // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
             horizon: 7,
             depreciationYears: 7,
-            robotUtilization: 0.55,
-            robotAvailability: 0.90,
+            robotUtilization: 55,
+            robotAvailability: 90,
             infrastructureRatio: 0.20,
             integrationRatio: 0.20,
             trainingRatio: 0.08,

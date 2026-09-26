@@ -213,18 +213,10 @@ function calcScenario(params, solution, scenarioType) {
 
   const availability = p.robotAvailability !== undefined
     ? (typeof p.robotAvailability === 'number' && p.robotAvailability > 1 ? p.robotAvailability / 100 : p.robotAvailability)
-    : defaults.robotAvailability;
+    : (isMedicalDomain ? defaults.medical.robotAvailability : defaults.robotAvailability);
   let utilization = p.robotUtilization !== undefined
     ? (typeof p.robotUtilization === 'number' && p.robotUtilization > 1 ? p.robotUtilization / 100 : p.robotUtilization)
-    : defaults.robotUtilization;
-
-  // Клиническая загрузка заметно ниже складской (подготовка пациентов, слоты, дезинформация)
-  if (isMedicalDomain && p.robotUtilization === undefined) {
-    utilization = 0.55;
-  }
-  if (isMedicalDomain && p.robotAvailability === undefined) {
-    availability = 0.90;
-  }
+    : (isMedicalDomain ? defaults.medical.robotUtilization : defaults.robotUtilization);
 
   let infraAdjustment = 1.0;
   if (floorFlatness > 0 && floorFlatness > 3) infraAdjustment *= 1.05;

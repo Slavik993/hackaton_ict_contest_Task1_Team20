@@ -706,8 +706,8 @@ function renderStep3(el) {
     { key: 'horizon', label: 'Горизонт расчёта (лет)', min: 1, max: 20, step: 1 },
     { key: 'depreciationYears', label: 'Срок амортизации (лет)', min: 1, max: 20, step: 1 },
     { key: 'discountRate', label: 'Дисконтная ставка (%)', min: 0, step: 0.5 },
-    { key: 'robotAvailability', label: 'Доступность робота (%)', min: 0, max: 100, step: 1 },
-    { key: 'robotUtilization', label: 'Загрузка робота (%)', min: 0, max: 100, step: 1 },
+{ key: 'robotAvailability', label: 'Доступность робота (%)', min: 0, max: 100, step: 1, hint: 'Процент рабочего времени, например 90' },
+    { key: 'robotUtilization', label: 'Загрузка робота (%)', min: 0, max: 100, step: 1, hint: 'Процент полезной нагрузки, например 55 для медицины' },
   ];
 
   var html = '<h2 class="section-title">Параметры объекта и расчёт экономики</h2>';
@@ -1053,8 +1053,14 @@ function calcScenarioLocal(params, solution) {
   var depreciationYears = Math.max(1, safeFloat(p.depreciationYears, 5));
   var horizon = Math.max(1, safeFloat(p.horizon, 5));
   var discountRate = safeFloat(p.discountRate, 10) / 100;
-  var availability = clamp(safeFloat(p.robotAvailability, isMedicalDomain ? 90 : 95) / 100, 0.05, 1);
-  var utilization = clamp(safeFloat(p.robotUtilization, isMedicalDomain ? 55 : 85) / 100, 0.05, 1);
+  // Принимаем как проценты (90) и как доля (0.9) — нормализуем к долям
+  function normalizePercent(val, fallback) {
+    var n = safeFloat(val, fallback);
+    if (n > 0 && n <= 1) return n;   // доля 0.9 / 0.55
+    return n / 100;                  // проценты 90 / 55
+  }
+  var availability = clamp(normalizePercent(p.robotAvailability, isMedicalDomain ? 90 : 95), 0.05, 1);
+  var utilization = clamp(normalizePercent(p.robotUtilization, isMedicalDomain ? 55 : 85), 0.05, 1);
   var energyTariff = safeFloat(p.energyTariff, 6.5);
   var infraRatio = safeFloat(p.infrastructureRatio, 0.15);
   var softwareRatio = safeFloat(p.softwareRatio, 0.10);
@@ -1069,15 +1075,12 @@ function calcScenarioLocal(params, solution) {
 
   // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
   if (isMedicalDomain) {
-    if (safeFloat(p.horizon, 5) === 5 && safeFloat(p.horizon, 5) === 5) horizon = 7;
+    if (safeFloat(p.horizon, 5) === 5) horizon = 7;
     if (safeFloat(p.depreciationYears, 5) === 5) depreciationYears = 7;
     if (!p.infrastructureRatio || safeFloat(p.infrastructureRatio, 0.15) === 0.15) infraRatio = 0.20;
     if (!p.integrationRatio || safeFloat(p.integrationRatio, 0.15) === 0.15) integrationRatio = 0.20;
     if (!p.trainingRatio || safeFloat(p.trainingRatio, 0.05) === 0.05) trainingRatio = 0.08;
     if (!p.serviceRatio || safeFloat(p.serviceRatio, 0.10) === 0.10) serviceRatio = 0.12;
-    // Клиническая загрузка заметно ниже складской (подготовка пациентов, слоты)
-    if (safeFloat(p.robotUtilization, 85) === 85) utilization = 0.55;
-    if (safeFloat(p.robotAvailability, 95) === 95) availability = 0.90;
   }
 
   var effectiveHoursPerDay = Math.min(24, shifts * 8);
