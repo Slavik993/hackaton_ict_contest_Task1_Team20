@@ -5,13 +5,13 @@
  *  3. Гарантированный скролл наверх при переходе между шагами
  *  4. Конфигуратор математической модели + чат-помощник на шаге 3
  *  5. Шаг 4 — формальные результаты (вместо визуализации роботов)
+ *  6. ИИ-подбор решений с локальным fallback (работает без сервера)
+ *  7. Автоматическое добавление топ-3 ИИ-рекомендаций в сравнение
  *
- *  Файл подключается ПОСЛЕ app.js и переопределяет renderStep1..4 и
- *  navigateToStep, сохраняя всю остальную логику расчётов без изменений.
+ *  Файл подключается ПОСЛЕ app.js и переопределяет renderStep1..4,
+ *  navigateToStep, fetchAIRecommendations и buildAIRecommendationsHTML,
+ *  сохраняя всю остальную логику расчётов без изменений.
  * ========================================================================== */
-
-/* Захватываем оригинальную функцию навигации ДО переопределения */
-var _assistantOriginalNavigateToStep = window.navigateToStep || function() {};
 
 /* -------------------- Вспомогательные данные и функции -------------------- */
 
@@ -99,6 +99,7 @@ function applyObjectChatChoice(item) {
   state.calculationSolutionId = null;
   state.filterType = 'all';
   state.searchQuery = '';
+  state.aiRecommendations = null;
   var d = getDefaults(item.industry, item.objectType);
   if (d && Object.keys(d).length) {
     d.objectType = item.objectType;
@@ -289,7 +290,7 @@ function handleModelChatInput(rawText) {
     var r = bump('licenseRatio', 0.05, 0.02, 0.3, 'Лицензии');
     response = '✅ ' + r.label + ': ' + r.cur.toFixed(2) + ' → ' + r.next.toFixed(2) + ' (доля OPEX).';
     changed = true;
-  } else if (text.indexOf('инфраструктур') !== -1) {
+  } else if (text.indexOf('инфр��структур') !== -1) {
     var r = bump('infrastructureRatio', 0.15, 0.02, 0.4, 'Инфраструктура');
     response = '✅ ' + r.label + ': ' + r.cur.toFixed(2) + ' → ' + r.next.toFixed(2) + ' (доля CAPEX).';
     changed = true;
@@ -401,6 +402,230 @@ function renderModelChat(el) {
   if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+/* -------------------- Локальный ИИ-подбор (fallback) --------------------- */
+
+function localRecommendSolutions(objectTypeId, query) {
+  var q = String(query || '').toLowerCase().trim();
+  var solutions = (HACKATHON_DATA.solutions || []).filter(function(s) {
+    return s.applicableTo && s.applicableTo.indexOf(objectTypeId) !== -1;
+  });
+
+  var ranked = solutions.map(function(s) {
+    var haystack = ((s.name || '') + ' ' + (s.vendor || '') + ' ' + (s.description || '') + ' ' + (s.features || []).join(' ')).toLowerCase();
+    var textScore = q ? (haystack.indexOf(q) !== -1 ? 1 : 0) : 0;
+    var fitScore = clamp(safeFloat(s.fit, 50), 0, 100) / 100;
+    var score = 0.75 * fitScore + 0.25 * textScore;
+    return { solution: s, score: score, textScore: textScore };
+  }).filter(function(r) { return r.score > 0; })
+    .sort(function(a, b) { return b.score - a.score; });
+
+  return ranked.slice(0, 8).map(function(r) {
+    var s = r.solution;
+    return {
+      id: s.id,
+      name: s.name,
+      vendor: s.vendor,
+      type: s.type,
+      description: s.description,
+      source: s.source,
+      features: s.features,
+      metrics: s.metrics || {},
+      fit: s.fit,
+      aiScore: Math.round(r.score * 100),
+      explanation: r.textScore ? 'Совпадение с запросом и типом объекта' : 'Соответствует типу объекта',
+      economicPreview: null
+    };
+  });
+}
+
+function normalizeRecommendation(sol) {
+  var metrics = sol.metrics || {};
+  return Object.assign({}, sol, {
+    metrics: {
+      throughput: sol.throughput !== undefined ? sol.throughput : metrics.throughput,
+      payload: sol.payload !== undefined ? sol.payload : metrics.payload,
+      accuracy: sol.accuracy !== undefined ? sol.accuracy : metrics.accuracy,
+      reliability: sol.reliability !== undefined ? sol.reliability : metrics.reliability,
+      laborReduction: sol.labor_reduction || sol.laborReduction || metrics.laborReduction,
+      productivityLift: sol.productivity_lift || sol.productivityLift || metrics.productivityLift,
+      co2Reduction: sol.co2_reduction || sol.co2Reduction || metrics.co2Reduction,
+      capexPerUnit: sol.price || sol.capexPerUnit || metrics.capexPerUnit,
+      serviceCostPerMonth: sol.serviceCostPerMonth || metrics.serviceCostPerMonth || 0,
+      powerKw: sol.power_kw || sol.powerKw || metrics.powerKw,
+      footprint: sol.footprint || metrics.footprint,
+      autonomy: sol.autonomy || metrics.autonomy,
+      implementation: sol.implementation_months || sol.implementation || metrics.implementation
+    }
+  });
+}
+
+function addRecommendationToSelection(sol) {
+  if (!sol || !sol.id) return false;
+  if (state.selectedSolutions.some(function(s) { return s.id === sol.id; })) return false;
+  if (state.selectedSolutions.length >= 3) {
+    showToast('Максимум 3 решения для сравнения', 'warning');
+    return false;
+  }
+  state.selectedSolutions.push(normalizeRecommendation(sol));
+  if (!state.calculationSolutionId) state.calculationSolutionId = sol.id;
+  return true;
+}
+
+function fetchAIRecommendations(el) {
+  var panel = el.querySelector('#aiRecommendationsPanel');
+  var loading = el.querySelector('#aiLoading');
+  if (!panel || !loading) return;
+
+  loading.style.display = 'inline-block';
+  panel.style.display = 'none';
+  panel.innerHTML = '';
+
+  var body = {
+    objectTypeId: state.selectedObjectType,
+    params: Object.assign({}, state.customParams),
+    query: state.searchQuery || '',
+    limit: 8
+  };
+
+  function showRecommendations(recs, offline) {
+    loading.style.display = 'none';
+    state.aiRecommendations = recs || [];
+
+    // Автоматически добавляем топ-3 рекомендации в сравнение
+    var addedCount = 0;
+    (recs || []).slice(0, 3).forEach(function(sol) {
+      if (addRecommendationToSelection(sol)) addedCount++;
+    });
+
+    saveState();
+    renderCurrentStep();
+
+    if (addedCount > 0) {
+      showToast('Топ-' + addedCount + ' рекомендации добавлены в сравнение', 'success');
+    } else if (offline && (!recs || !recs.length)) {
+      showToast('Подходящих решений не найдено', 'warning');
+    } else if (offline) {
+      showToast('Сервер недоступен — подбор выполнен локально', 'warning');
+    }
+  }
+
+  if (typeof fetch !== 'function') {
+    showRecommendations(localRecommendSolutions(state.selectedObjectType, state.searchQuery || ''), true);
+    return;
+  }
+
+  fetch('/api/recommendations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  .then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  })
+  .then(function(data) {
+    if (data.recommendations && data.recommendations.length > 0) {
+      showRecommendations(data.recommendations, false);
+    } else {
+      showRecommendations(localRecommendSolutions(state.selectedObjectType, state.searchQuery || ''), true);
+    }
+  })
+  .catch(function() {
+    showRecommendations(localRecommendSolutions(state.selectedObjectType, state.searchQuery || ''), true);
+  });
+}
+
+function buildAIRecommendationsHTML(recs) {
+  if (!recs || !recs.length) {
+    return '<div class="panel" style="margin-bottom:24px"><div class="panel-title">🧠 ИИ-рекомендации</div><div class="form-hint">ИИ не нашёл подходящих решений. Попробуйте изменить параметры или поисковый запрос.</div></div>';
+  }
+
+  var maxScore = Math.max.apply(null, recs.map(function(r) { return r.aiScore || 0; }));
+  var html = '<div class="panel ai-recommendations-panel" style="margin-bottom:24px">';
+  html += '<div class="panel-title">🧠 ИИ-рекомендации <span class="ai-count-badge">' + recs.length + '</span></div>';
+  html += '<p class="section-desc" style="margin-bottom:16px">Решения ранжированы по экономической эффективности, совпадению с задачей и параметрам объекта. Топ-3 рекомендации добавлены в сравнение автоматически — можно сразу переходить к расчёту или скорректировать выбор ниже.</p>';
+
+  html += '<div class="ai-top-strip">';
+  recs.slice(0, 3).forEach(function(r, idx) {
+    html += '<div class="ai-top-item rank-' + (idx + 1) + '">';
+    html += '<div class="ai-rank-num">' + (idx + 1) + '</div>';
+    html += '<div class="ai-top-name">' + escapeHTML(r.name || 'Без названия') + '</div>';
+    html += '<div class="ai-top-meta">Балл ' + (r.aiScore || 0) + '</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+
+  html += '<div class="card-grid ai-rec-grid">';
+  recs.forEach(function(r, idx) {
+    var isAdded = state.selectedSolutions.some(function(sl) { return sl.id === r.id; });
+    var scorePct = maxScore > 0 ? Math.round(((r.aiScore || 0) / maxScore) * 100) : 0;
+    var isTop = idx < 3;
+
+    html += '<div class="card ai-recommendation-card' + (isTop ? ' ai-top-card' : '') + (isAdded ? ' added' : '') + '" data-solution-id="' + escapeAttr(r.id) + '">';
+    html += '<div class="ai-card-rank">' + (idx + 1) + '</div>';
+    html += '<div class="card-header">';
+    html += '<div class="card-title">' + escapeHTML(r.name || 'Без названия') + '</div>';
+    html += '<div class="ai-badges">';
+    html += '<span class="card-badge ai-score" title="ИИ-балл">' + (r.aiScore || 0) + '</span>';
+    html += '<span class="card-badge fit">' + Math.round(r.fit || 0) + '%</span>';
+    html += '</div></div>';
+
+    html += '<div class="ai-score-bar-wrap"><div class="ai-score-bar" style="width:' + scorePct + '%"></div></div>';
+
+    html += '<p class="card-subtitle">' + escapeHTML(r.vendor || 'Неизвестный вендор') + ' · ' + escapeHTML(r.source || '') + '</p>';
+    html += '<p class="card-description">' + escapeHTML((r.description || '').substring(0, 140)) + ((r.description || '').length > 140 ? '…' : '') + '</p>';
+
+    if (r.explanation) {
+      html += '<div class="ai-explanation">' + escapeHTML(r.explanation) + '</div>';
+    }
+
+    html += '<div class="ai-econ-grid">';
+    var eco = r.economicPreview || {};
+    if (eco.robotCount) {
+      html += '<div class="ai-econ-item"><span class="ai-econ-label">Роботов</span><span class="ai-econ-val">' + eco.robotCount + '</span></div>';
+    }
+    if (eco.payback != null && eco.payback >= 0) {
+      html += '<div class="ai-econ-item"><span class="ai-econ-label">Окупаемость</span><span class="ai-econ-val">' + formatNum(eco.payback, 1) + ' лет</span></div>';
+    }
+    if (eco.npv != null) {
+      html += '<div class="ai-econ-item"><span class="ai-econ-label">NPV</span><span class="ai-econ-val">' + formatCurrency(eco.npv) + '</span></div>';
+    }
+    if (!eco.robotCount && !eco.payback && eco.npv == null) {
+      html += '<div class="ai-econ-item"><span class="ai-econ-label">Экономика</span><span class="ai-econ-val">—</span></div>';
+    }
+    html += '</div>';
+
+    html += '<div class="ai-card-actions">';
+    html += '<button class="btn btn-sm ' + (isAdded ? 'btn-success' : 'btn-primary') + '" data-ai-add="' + escapeAttr(r.id) + '"' + (isAdded ? ' disabled' : '') + '>' + (isAdded ? '✓ В сравнении' : 'Добавить в сравнение') + '</button>';
+    html += '</div>';
+    html += '</div>';
+  });
+  html += '</div></div>';
+  return html;
+}
+
+function bindAIRecsPanel(el) {
+  var panel = el.querySelector('#aiRecommendationsPanel');
+  if (!panel || !state.aiRecommendations || !state.aiRecommendations.length) return;
+
+  panel.innerHTML = buildAIRecommendationsHTML(state.aiRecommendations);
+  panel.style.display = 'block';
+
+  panel.querySelectorAll('[data-ai-add]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var sid = btn.dataset.aiAdd;
+      var sol = state.aiRecommendations.find(function(r) { return r.id === sid; });
+      if (!sol) return;
+      if (addRecommendationToSelection(sol)) {
+        saveState();
+        renderCurrentStep();
+        showToast((sol.name || '') + ' добавлено в сравнение', 'success');
+      }
+    });
+  });
+}
+
 /* -------------------- Шаг 1: выбор объекта + чат ------------------------- */
 
 function renderStep1(el) {
@@ -443,7 +668,7 @@ function renderStep1(el) {
 
     html += '<div class="btn-group-right">';
     html += '<button class="btn btn-secondary" id="btnBack1" data-action="back">Назад</button>';
-    html += '<button class="btn btn-primary" id="btnNext1" data-action="next"' + (!state.selectedObjectType ? ' disabled' : '') + '>Далее: Подбор решений</button>';
+    html += '<button class="btn btn-primary" id="btnNext1" data-action="next">Далее: Подбор решений</button>';
     html += '</div>';
   }
 
@@ -464,6 +689,7 @@ function renderStep1(el) {
       state.calculationSolutionId = null;
       state.filterType = 'all';
       state.searchQuery = '';
+      state.aiRecommendations = null;
       renderCurrentStep();
       saveState();
     });
@@ -474,6 +700,7 @@ function renderStep1(el) {
       state.selectedObjectType = card.dataset.objectType;
       state.selectedSolutions = [];
       state.calculationSolutionId = null;
+      state.aiRecommendations = null;
       var d = getDefaults(state.selectedIndustry, state.selectedObjectType);
       if (d && Object.keys(d).length) {
         d.objectType = state.selectedObjectType;
@@ -500,9 +727,21 @@ function renderStep1(el) {
   var btnBack = el.querySelector('#btnBack1');
   var btnNext = el.querySelector('#btnNext1');
   if (btnBack) btnBack.addEventListener('click', function() { navigateToStep(1); });
-  if (btnNext) btnNext.addEventListener('click', function() { navigateToStep(2); });
+  if (btnNext) {
+    btnNext.addEventListener('click', function() {
+      if (!state.selectedObjectType) {
+        showToast('Сначала выберите тип объекта', 'warning');
+        return;
+      }
+      navigateToStep(2);
+    });
+  }
 
-  renderObjectChat(el);
+  try {
+    renderObjectChat(el);
+  } catch (e) {
+    console.warn('Object chat render failed:', e);
+  }
 }
 
 /* -------------------- Шаг 2: каталог + sticky-панель --------------------- */
@@ -688,6 +927,9 @@ function renderStep2(el) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   });
+
+  // Восстанавливаем открытую панель ИИ-рекомендаций после перерисовки
+  bindAIRecsPanel(el);
 }
 
 /* -------------------- Шаг 3: расчёт + конфигуратор ----------------------- */
@@ -959,7 +1201,11 @@ function renderStep3(el) {
     });
   }
 
-  renderModelChat(el);
+  try {
+    renderModelChat(el);
+  } catch (e) {
+    console.warn('Model chat render failed:', e);
+  }
 }
 
 /* -------------------- Шаг 4: формальные результаты ----------------------- */
@@ -1069,7 +1315,21 @@ function renderStep4(el) {
 /* -------------------- Скролл при переходе между шагами ------------------- */
 
 function navigateToStep(n) {
-  _assistantOriginalNavigateToStep(n);
+  if (n < 1 || n > 4) return;
+  state.currentStep = n;
+  document.querySelectorAll('.step').forEach(function(el) {
+    var s = parseInt(el.dataset.step);
+    el.classList.remove('active', 'completed');
+    if (s < n) el.classList.add('completed');
+    if (s === n) el.classList.add('active');
+  });
+  if (state.vizAnimFrame) {
+    cancelAnimationFrame(state.vizAnimFrame);
+    state.vizAnimFrame = null;
+  }
+  if (typeof dispose3D === 'function') dispose3D();
+  renderCurrentStep();
+  saveState();
   // Гарантируем, что пользователь всегда оказывается вверху новой страницы
   setTimeout(function() {
     window.scrollTo(0, 0);
