@@ -1007,81 +1007,6 @@ body {
   width: 10px; height: 10px; border-radius: 2px; display: inline-block;
 }
 
-.viz-mode-toggle {
-  display: flex;
-  gap: 4px;
-  background: var(--color-surface);
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-}
-.viz-mode-toggle .btn {
-  border: none;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 6px 14px;
-  font-size: 0.8125rem;
-}
-.viz-mode-toggle .btn.active {
-  background: var(--color-primary);
-  color: #fff;
-}
-
-.viz-3d-container {
-  position: relative;
-  width: 100%;
-  height: 520px;
-  background: #0b1220;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.viz-3d-container canvas { display: block; }
-.viz-3d-hint {
-  position: absolute;
-  bottom: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0,0,0,0.55);
-  color: #e2e8f0;
-  font-size: 0.7rem;
-  padding: 4px 10px;
-  border-radius: 12px;
-  pointer-events: none;
-  white-space: nowrap;
-}
-.viz-3d-controls {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.viz-3d-controls button {
-  background: rgba(15, 23, 42, 0.75);
-  border: 1px solid rgba(255,255,255,0.15);
-  color: #e2e8f0;
-  border-radius: 6px;
-  padding: 5px 9px;
-  font-size: 0.7rem;
-  cursor: pointer;
-  backdrop-filter: blur(4px);
-}
-.viz-3d-controls button:hover { background: rgba(79,124,255,0.5); }
-
-.viz-legend {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-top: 12px;
-  font-size: 0.72rem;
-  color: var(--color-text-secondary);
-}
-.viz-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.viz-legend i {
-  width: 10px; height: 10px; border-radius: 2px; display: inline-block;
-}
-
 .print-only { display: none; }
 
 @media print {
@@ -1089,4 +1014,115 @@ body {
   .steps-nav, .viz-controls, .btn-group, .toast-container { display: none; }
   .step-content { animation: none; }
   .print-only { display: block; }
+}
+
+/* ===================== Новые компоненты (assistant.js) ==================== */
+
+/* Чат-виджеты */
+.chat-widget {
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.chat-messages {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--color-surface-alt);
+}
+
+.chat-msg {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.chat-msg.bot {
+  align-self: flex-start;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-top-left-radius: 2px;
+  color: var(--color-text);
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--color-primary);
+  color: #fff;
+  border-top-right-radius: 2px;
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-input-row .chat-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+.chat-chip {
+  font-size: 0.75rem;
+  padding: 4px 10px;
+}
+
+/* Плавающая панель действий (шаг 2) */
+.sticky-actions {
+  position: sticky;
+  bottom: 12px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.sticky-actions-info {
+  margin-right: auto;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+/* Конфигуратор математической модели */
+.model-ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* Формальные результаты */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
 }
