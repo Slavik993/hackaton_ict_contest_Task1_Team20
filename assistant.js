@@ -10,9 +10,6 @@
  *  navigateToStep, сохраняя всю остальную логику расчётов без изменений.
  * ========================================================================== */
 
-/* Захватываем оригинальную функцию навигации ДО переопределения */
-var _assistantOriginalNavigateToStep = window.navigateToStep || function() {};
-
 /* -------------------- Вспомогательные данные и функции -------------------- */
 
 var OBJECT_CHAT_KEYWORDS = [
@@ -443,7 +440,7 @@ function renderStep1(el) {
 
     html += '<div class="btn-group-right">';
     html += '<button class="btn btn-secondary" id="btnBack1" data-action="back">Назад</button>';
-    html += '<button class="btn btn-primary" id="btnNext1" data-action="next"' + (!state.selectedObjectType ? ' disabled' : '') + '>Далее: Подбор решений</button>';
+    html += '<button class="btn btn-primary" id="btnNext1" data-action="next">Далее: Подбор решений</button>';
     html += '</div>';
   }
 
@@ -500,9 +497,21 @@ function renderStep1(el) {
   var btnBack = el.querySelector('#btnBack1');
   var btnNext = el.querySelector('#btnNext1');
   if (btnBack) btnBack.addEventListener('click', function() { navigateToStep(1); });
-  if (btnNext) btnNext.addEventListener('click', function() { navigateToStep(2); });
+  if (btnNext) {
+    btnNext.addEventListener('click', function() {
+      if (!state.selectedObjectType) {
+        showToast('Сначала выберите тип объекта', 'warning');
+        return;
+      }
+      navigateToStep(2);
+    });
+  }
 
-  renderObjectChat(el);
+  try {
+    renderObjectChat(el);
+  } catch (e) {
+    console.warn('Object chat render failed:', e);
+  }
 }
 
 /* -------------------- Шаг 2: каталог + sticky-панель --------------------- */
@@ -959,7 +968,11 @@ function renderStep3(el) {
     });
   }
 
-  renderModelChat(el);
+  try {
+    renderModelChat(el);
+  } catch (e) {
+    console.warn('Model chat render failed:', e);
+  }
 }
 
 /* -------------------- Шаг 4: формальные результаты ----------------------- */
@@ -1069,7 +1082,21 @@ function renderStep4(el) {
 /* -------------------- Скролл при переходе между шагами ------------------- */
 
 function navigateToStep(n) {
-  _assistantOriginalNavigateToStep(n);
+  if (n < 1 || n > 4) return;
+  state.currentStep = n;
+  document.querySelectorAll('.step').forEach(function(el) {
+    var s = parseInt(el.dataset.step);
+    el.classList.remove('active', 'completed');
+    if (s < n) el.classList.add('completed');
+    if (s === n) el.classList.add('active');
+  });
+  if (state.vizAnimFrame) {
+    cancelAnimationFrame(state.vizAnimFrame);
+    state.vizAnimFrame = null;
+  }
+  if (typeof dispose3D === 'function') dispose3D();
+  renderCurrentStep();
+  saveState();
   // Гарантируем, что пользователь всегда оказывается вверху новой страницы
   setTimeout(function() {
     window.scrollTo(0, 0);
