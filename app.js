@@ -2003,7 +2003,19 @@ function buildSimulatorPanelHtml(results) {
   html += '<span class="sim-legend-item"><i style="background:#8b5cf6"></i>NPV</span>';
   html += '</div>';
   html += '</div>';
-  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div>';
+  // Адаптивная высота графика: компактная когда мало шагов, во всю ширину — когда много
+  var snapLen = (state.sim && state.sim.snapshot && state.sim.snapshot.history) ? state.sim.snapshot.history.length : 0;
+  var chartHeight = snapLen >= 30 ? 280 : (snapLen >= 12 ? 220 : 160);
+  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 ' + chartHeight + '" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg></div>';
+  // Скруббер для прокрутки истории + двойные стрелки
+  html += '<div class="sim-scrubber" id="simScrubberBox">';
+  html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubFirst" title="К началу">⏮</button>';
+  html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubPrev" title="Назад">◀</button>';
+  html += '<input type="range" class="sim-scrubber-range" id="simScrubber" min="0" max="100" value="0" step="1">';
+  html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubNext" title="Вперёд">▶</button>';
+  html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubLast" title="К концу">⏭</button>';
+  html += '<span class="sim-scrubber-label" id="simScrubberLabel">—</span>';
+  html += '</div>';
   html += '</div>';
 
   // ---- KPI column ----
@@ -2105,6 +2117,41 @@ function setupSimulatorControls(el) {
       resetSimulatorWithConfig();
     });
   }
+
+  // Скруббер прокрутки истории
+  var scrubber = el.querySelector('#simScrubber');
+  var scrubFirst = el.querySelector('#simScrubFirst');
+  var scrubPrev = el.querySelector('#simScrubPrev');
+  var scrubNext = el.querySelector('#simScrubNext');
+  var scrubLast = el.querySelector('#simScrubLast');
+  function moveWindow(deltaSteps) {
+    var snap = state.sim && state.sim.snapshot;
+    var total = snap && snap.history ? snap.history.length : 0;
+    if (!total) return;
+    var ws = state.sim.windowSize || Math.min(12, total);
+    var cur = state.sim.windowStart || Math.max(0, total - ws);
+    var next = cur + deltaSteps;
+    next = clamp(next, 0, Math.max(0, total - 1));
+    state.sim.windowStart = next;
+    state.sim.windowSize = ws;
+    if (snap && snap.history) {
+      drawSimulatorChart(snap.history, snap.baseline || {});
+      renderSimulatorTable(snap);
+    }
+  }
+  if (scrubber) {
+    scrubber.addEventListener('input', function(e) {
+      state.sim.windowStart = safeFloat(e.target.value, 0);
+      var snap = state.sim && state.sim.snapshot;
+      if (snap && snap.history) {
+        drawSimulatorChart(snap.history, snap.baseline || {});
+      }
+    });
+  }
+  if (scrubFirst) scrubFirst.addEventListener('click', function() { moveWindow(-1e9); });
+  if (scrubPrev) scrubPrev.addEventListener('click', function() { moveWindow(-1); });
+  if (scrubNext) scrubNext.addEventListener('click', function() { moveWindow(1); });
+  if (scrubLast) scrubLast.addEventListener('click', function() { moveWindow(1e9); });
 }
 
 function getSimulatorSeed() {
@@ -2387,6 +2434,46 @@ function renderSimulatorTable(snap) {
 function drawSimulatorChart(history, baseline) {
   var svg = document.getElementById('simChart');
   if (!svg) return;
+
+  // Определяем окно отображения (через скруббер)
+  var totalLen = (history && history.length) || 0;
+  var windowSize = Math.min(12, totalLen);
+  var start = 0;
+  var end = totalLen;
+  if (state && state.sim && typeof state.sim.windowStart === 'number') {
+    var w = state.sim.windowSize || windowSize;
+    var s = clamp(state.sim.windowStart, 0, Math.max(0, totalLen - 1));
+    start = s;
+    end = Math.min(totalLen, s + w);
+    if (end === totalLen && end - start < w) start = Math.max(0, end - w);
+  } else {
+    end = totalLen;
+    start = Math.max(0, end - windowSize);
+  }
+  var visible = (history || []).slice(start, end);
+
+  // Скруббер: обновляем максимум/значение и подпись
+  var scrubber = document.getElementById('simScrubber');
+  if (scrubber) {
+    scrubber.max = String(Math.max(0, totalLen - (state.sim && state.sim.windowSize || windowSize)));
+    scrubber.value = String(start);
+  }
+  var scrubberLabel = document.getElementById('simScrubberLabel');
+  if (scrubberLabel) {
+    if (totalLen === 0) {
+      scrubberLabel.textContent = '— / —';
+    } else {
+      var firstH = history[start];
+      var lastH = history[end - 1] || firstH;
+      scrubberLabel.textContent = (firstH ? 'M' + firstH.stepIndex : '?') + ' → M' + (lastH ? lastH.stepIndex : '?') + ' из ' + totalLen;
+    }
+  }
+  if (totalLen === 0) {
+    svg.innerHTML = '<text x="400" y="160" text-anchor="middle" fill="#94a3b8" font-size="13">Запустите симуляцию, чтобы увидеть график</text>';
+    return;
+  }
+  // Используем данные внутри окна для построения серий
+  history = visible;
 
   var W = 800, H = 320;
   var padL = 50, padR = 16, padT = 18, padB = 28;

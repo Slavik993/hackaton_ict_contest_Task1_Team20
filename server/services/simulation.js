@@ -353,6 +353,8 @@ function extractBaselineSummary(baseline) {
   if (!baseline) return null;
   return {
     totalCapex: baseline.totalCapex,
+    irr: baseline.irr,
+    dpp: baseline.dpp,
     totalAnnualOpex: baseline.totalAnnualOpex,
     annualSavings: baseline.annualSavings,
     netAnnualEffect: baseline.netAnnualEffect,
