@@ -1,3 +1,27 @@
+'use strict';
+
+const { NPV: npvFn, IRR: irrFn, DPP: dppFn } = require('./finmath');
+
+function computeProjectIRR(initialOutflow, annualNetCashFlow, horizonYears, terminalReplacements) {
+  var flows = [];
+  var initial = Array.isArray(initialOutflow)
+    ? initialOutflow.reduce(function (a, b) { return a + b; }, 0)
+    : (initialOutflow || 0);
+  flows.push(-initial);
+  for (var y = 1; y <= horizonYears; y++) {
+    var cf = annualNetCashFlow || 0;
+    if (Array.isArray(terminalReplacements)) {
+      terminalReplacements.forEach(function (r) {
+        if (r && r.year === y) cf -= (r.amount || 0);
+      });
+    }
+    flows.push(cf);
+  }
+  var rate = irrFn(flows);
+  var dpp = dppFn(flows, defaults.discountRate);
+  return { irr: rate, dpp: dpp };
+}
+
 const defaults = {
   depreciationYears: 5,
   amortizationMethod: 'linear',
@@ -100,6 +124,13 @@ function calcLoanScenario(params, solution, purchaseScenario) {
     tco += totalAnnualCost;
   }
 
+  // IRR + Discounted Payback Period для кредитной модели
+  const loanIrr = computeProjectIRR(
+    capexComponent.downPayment,
+    annualSavings - totalAnnualCost,
+    horizon
+  );
+
   return {
     model: 'loan',
     robotCount: Math.ceil(robotCount),
@@ -112,6 +143,8 @@ function calcLoanScenario(params, solution, purchaseScenario) {
     payback: isFinite(payback) ? payback : -1,
     npv,
     roi,
+    irr: loanIrr.irr,
+    dpp: loanIrr.dpp,
     tco,
     co2Reduction: purchaseScenario.co2Reduction || 0,
     horizon,
@@ -331,6 +364,12 @@ function calcScenario(params, solution, scenarioType) {
 
   const co2Reduction = (p.co2ReductionFactor || 0) * robotCount;
 
+  // IRR + Discounted Payback Period
+  const replacements = (p.robotReplacementYear && horizon > p.robotReplacementYear)
+    ? [{ year: p.robotReplacementYear, amount: equipmentCost * 0.7 }]
+    : [];
+  const irrResult = computeProjectIRR(adjustedCapex, annualSavings - totalAnnualOpex, horizon, replacements);
+
   return {
     robotCount: Math.ceil(robotCount),
     equipmentCost,
@@ -367,6 +406,8 @@ function calcScenario(params, solution, scenarioType) {
     tco,
     co2Reduction,
     horizon,
+    irr: irrResult.irr,
+    dpp: irrResult.dpp,
     throughputPerRobot: throughput,
     laborCostAnnual: annualLaborCost,
     assumptions: {
@@ -466,6 +507,12 @@ function calcRaasScenario(params, solution) {
 
   const roi = totalPayments > 0 ? ((annualSavings * horizon - totalPayments) / totalPayments) * 100 : 0;
 
+  const raasIrr = computeProjectIRR(
+    [purchaseOptionPrice || 0, monthlyPayment],
+    annualSavings - annualOpex,
+    horizon
+  );
+
   return {
     robotCount,
     totalCapex: 0,
@@ -475,6 +522,8 @@ function calcRaasScenario(params, solution) {
     payback: isFinite(payback) ? payback : -1,
     npv,
     roi,
+    irr: raasIrr.irr,
+    dpp: raasIrr.dpp,
     tco: totalPayments + annualOpex * (horizon - contractYears),
     co2Reduction: (p.co2ReductionFactor || 0) * robotCount,
     horizon,

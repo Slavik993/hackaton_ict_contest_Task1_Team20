@@ -1793,7 +1793,9 @@ function buildSimulatorPanelHtml(results) {
   html += '<div class="sim-kpi"><span class="sim-kpi-label">Денежный поток</span><span class="sim-kpi-value" id="simKpiCashflow">' + formatCurrency(0) + '</span></div>';
   html += '<div class="sim-kpi"><span class="sim-kpi-label">NPV</span><span class="sim-kpi-value" id="simKpiNpv">' + formatCurrency(0) + '</span></div>';
   html += '<div class="sim-kpi"><span class="sim-kpi-label">ROI за горизонт</span><span class="sim-kpi-value" id="simKpiRoi">' + formatNum(0, 1) + '%</span></div>';
+  html += '<div class="sim-kpi" title="Внутренняя норма доходности — ставка дисконтирования, при которой NPV = 0. Чем выше IRR, тем выгоднее проект."><span class="sim-kpi-label">IRR (внутр. норма доходн.)</span><span class="sim-kpi-value" id="simKpiIrr">—</span></div>';
   html += '<div class="sim-kpi"><span class="sim-kpi-label">Срок окупаемости</span><span class="sim-kpi-value" id="simKpiPayback">—</span></div>';
+  html += '<div class="sim-kpi" title="Дисконтированный срок окупаемости — учитывает стоимость денег во времени."><span class="sim-kpi-label">DPP (диск. окупаемость)</span><span class="sim-kpi-value" id="simKpiDpp">—</span></div>';
   html += '<div class="sim-kpi"><span class="sim-kpi-label">CO₂ экономия</span><span class="sim-kpi-value" id="simKpiCo2">' + formatNum(0, 1) + ' т</span></div>';
   html += '<div class="sim-kpi"><span class="sim-kpi-label">Шоки надёжности</span><span class="sim-kpi-value" id="simKpiShocks">0</span></div>';
   html += '<div class="sim-kpi sim-kpi-empty">Сценарий: <strong id="simKpiScenario">' + (model === 'raas' ? 'RaaS' : (model === 'loan' ? 'Кредит' : 'Покупка')) + '</strong></div>';
@@ -2101,6 +2103,8 @@ function renderSimulatorFromSnapshot(snap) {
   var last = history[history.length - 1] || { netPresentValue: 0, cumulativeCashFlow: cumCashflow };
   var paybackYears = snap.summary && snap.summary.paybackYears;
   var roi = snap.summary && snap.summary.roi;
+  var irr = snap.baseline && snap.baseline.irr;
+  var dpp = snap.baseline && snap.baseline.dpp;
   var co2 = snap.summary && snap.summary.accumulatedCO2;
 
   function setText(id, val) {
@@ -2116,7 +2120,9 @@ function renderSimulatorFromSnapshot(snap) {
   setText('simKpiCashflow', formatCurrency(last.cumulativeCashFlow));
   setText('simKpiNpv', formatCurrency(last.netPresentValue));
   setText('simKpiRoi', formatNum(roi || 0, 1) + ' %');
+  setText('simKpiIrr', irr != null && isFinite(irr) ? (irr * 100).toFixed(1) + ' %' : '—');
   setText('simKpiPayback', paybackYears != null ? formatNum(paybackYears, 1) + ' лет' : '—');
+  setText('simKpiDpp', dpp != null && dpp >= 0 && isFinite(dpp) ? dpp.toFixed(1) + ' лет' : '—');
   setText('simKpiCo2', formatNum(co2 || 0, 1) + ' т');
   setText('simKpiShocks', String(shocks));
 
