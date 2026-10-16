@@ -1947,8 +1947,8 @@ function buildSimulatorPanelHtml(results) {
   var html = '';
   html += '<div class="simulator-panel" id="simulatorPanel">';
   html += '<div class="sim-header">';
-  html += '<h3 class="sim-title">🧪 Экономический симулятор</h3>';
-  html += '<p class="sim-subtitle">Пошаговая симуляция влияния роботизации на экономику объекта: ежемесячная динамика CAPEX, OPEX, экономии, ROI, NPV, IRR. <strong>Результаты шагов обновляют итоговые экономические показатели на Шаге 3.</strong></p>';
+  html += '<h2 class="sim-title-huge">🧪 СИМУЛЯТОР</h2>';
+  html += '<p class="sim-subtitle"><strong>Пошаговая симуляция влияния роботизации на экономику объекта</strong> — каждый месяц пересчитывает CAPEX, OPEX, экономию, ROI, NPV, IRR, денежный поток. <strong style="color:#1d4ed8">Результаты шагов обновляют итоговые экономические показатели на Шаге 3 и в PDF-отчёте.</strong></p>';
   html += '<div class="sim-impact-banner">';
   html += '<div class="sim-impact-icon">∑</div>';
   html += '<div><strong>Симуляция влияет на экономику.</strong> Каждый шаг пересчитывает денежный поток, амортизацию, стохастические шоки и дисконтированный NPV — итоговый ROI и срок окупаемости зависят от того, как пройдёт симуляция.</div>';
@@ -3409,29 +3409,53 @@ function setupWelcomeScreen() {
   var helpBtn = document.getElementById('welcomeHelpBtn');
   var btnStart = document.getElementById('welcomeStart');
   var btnSkip = document.getElementById('welcomeSkip');
-  if (!screen || !helpBtn) return;
+  if (!helpBtn) {
+    // Если платформа встроена и кнопки нет — добавляем динамически
+    helpBtn = document.createElement('button');
+    helpBtn.id = 'welcomeHelpBtn';
+    helpBtn.className = 'welcome-help-btn';
+    helpBtn.title = 'Что делает платформа';
+    helpBtn.textContent = '?';
+    document.body.appendChild(helpBtn);
+  }
+  if (!screen) return;
 
-  // Показываем welcome при первом заходе (нет флага в localStorage)
+  // Показываем welcome при первом заходе
   var dismissed = false;
   try { dismissed = localStorage.getItem('roboplatform_welcome_seen') === '1'; } catch(e) {}
+  helpBtn.style.display = 'flex';
   if (!dismissed) {
     screen.style.display = 'flex';
-    helpBtn.style.display = 'flex';
-  } else {
-    helpBtn.style.display = 'flex';
   }
 
+  function showWelcome() { screen.style.display = 'flex'; }
   function hideWelcome(forever) {
     screen.style.display = 'none';
     if (forever) {
       try { localStorage.setItem('roboplatform_welcome_seen', '1'); } catch(e) {}
     }
   }
-  if (btnStart) btnStart.addEventListener('click', function() { hideWelcome(false); });
-  if (btnSkip) btnSkip.addEventListener('click', function() { hideWelcome(true); });
-  if (helpBtn) helpBtn.addEventListener('click', function() {
-    screen.style.display = 'flex';
-  });
+  // Используем stopPropagation, чтобы клик по кнопке не дошёл до других обработчиков
+  function openHandler(e) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    showWelcome();
+  }
+  function startHandler(e) {
+    if (e) { e.preventDefault(); }
+    hideWelcome(false);
+  }
+  function skipHandler(e) {
+    if (e) { e.preventDefault(); }
+    hideWelcome(true);
+  }
+  // Дублируем обработчики чтобы быть устойчивым
+  helpBtn.onclick = openHandler;
+  if (btnStart) btnStart.onclick = startHandler;
+  if (btnSkip) btnSkip.onclick = skipHandler;
+  // Закрытие по клику на фон welcome-экрана
+  screen.onclick = function(e) {
+    if (e.target === screen) hideWelcome(false);
+  };
 }
 
 function init() {

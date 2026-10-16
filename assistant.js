@@ -1264,6 +1264,15 @@ function renderStep4(el) {
   var html = '<h2 class="section-title">📋 Формальные результаты</h2>';
   html += '<p class="section-desc">Итоговый отчёт по предварительной оценке роботизации объекта &ldquo;' + escapeHTML(getObjectTypeName()) + '&rdquo;. Данные можно экспортировать или распечатать.</p>';
 
+  // Сначала выводим панель симулятора (она же объявлена в app.js, доступна через window)
+  if (typeof buildSimulatorPanelHtml === 'function') {
+    try {
+      html += buildSimulatorPanelHtml(results);
+    } catch (e) {
+      console.warn('simulator html failed', e);
+    }
+  }
+
   html += '<div class="results-panel" style="margin-top:0">';
   html += '<div class="panel-title">Резюме проекта</div>';
   html += '<div class="summary-grid">';
@@ -1310,6 +1319,26 @@ function renderStep4(el) {
   if (btnBack) btnBack.addEventListener('click', function() { navigateToStep(3); });
   if (btnExport) btnExport.addEventListener('click', function() { exportCalculation(); });
   if (btnPrint) btnPrint.addEventListener('click', function() { window.print(); });
+
+  // Подключаем обработчики симулятора и автозапуск, чтобы пользователь
+  // сразу увидел, что панель «живая»
+  if (typeof setupSimulatorControls === 'function') {
+    try { setupSimulatorControls(el); } catch (e) { console.warn(e); }
+  }
+  if (typeof setupVizControls === 'function') {
+    try { setupVizControls(el); } catch (e) { console.warn(e); }
+  }
+  // Если симуляция ещё не была запущена — делаем демо-шаги (6 шагов) для наглядности
+  if (state && state.sim && !state.sim.id && !state.sim._autoStarted) {
+    state.sim._autoStarted = true;
+    if (typeof bootstrapSimulatorDemo === 'function') {
+      setTimeout(function() { bootstrapSimulatorDemo(); }, 600);
+    }
+  }
+  // Если снапшот уже есть — перерисуем панель по нему
+  if (state && state.sim && state.sim.snapshot && typeof renderSimulatorFromSnapshot === 'function') {
+    try { renderSimulatorFromSnapshot(state.sim.snapshot); } catch (e) { /* */ }
+  }
 }
 
 /* -------------------- Скролл при переходе между шагами ------------------- */
@@ -1326,6 +1355,10 @@ function navigateToStep(n) {
   if (state.vizAnimFrame) {
     cancelAnimationFrame(state.vizAnimFrame);
     state.vizAnimFrame = null;
+  }
+  if (state && state.sim && state.sim.timerId) {
+    clearInterval(state.sim.timerId);
+    state.sim.timerId = null;
   }
   if (typeof dispose3D === 'function') dispose3D();
   renderCurrentStep();

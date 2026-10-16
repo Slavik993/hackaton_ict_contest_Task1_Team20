@@ -1345,12 +1345,27 @@ body {
   font-weight: 700;
   color: var(--color-text);
 }
-.sim-subtitle {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 0.875rem;
-  line-height: 1.45;
+.sim-title-huge {
+  margin: 0 0 10px;
+  font-size: 2.4rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  color: var(--color-primary);
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #4f7cff 0%, #22c55e 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.6);
+  line-height: 1.1;
 }
+.sim-subtitle {
+  margin: 0 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.sim-subtitle strong { color: var(--color-text); }
 
 .sim-controls {
   display: flex;

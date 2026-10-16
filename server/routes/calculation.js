@@ -7,6 +7,41 @@ const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
 const router = express.Router();
 
+// PDFKit поставляется только с Type1 фонтами (Latin-1). Кириллица в
+// них не поддерживается — отображается как пустые символы. Чтобы
+// отчёт был читаемым, транслитерируем русские строки в латиницу.
+const TRANSLIT_MAP = {
+  'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z',
+  'и':'i','й':'i','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
+  'с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'shch',
+  'ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'
+};
+function toAscii(s) {
+  if (typeof s !== 'string') {
+    if (s === undefined || s === null) return '';
+    return String(s);
+  }
+  let out = '';
+  for (const ch of s) {
+    const lc = ch.toLowerCase();
+    if (TRANSLIT_MAP[lc] !== undefined) {
+      const mapped = TRANSLIT_MAP[lc];
+      // Сохраняем регистр первой буквы
+      out += (ch === ch.toUpperCase() && ch !== ch.toLowerCase()) ? mapped.toUpperCase() : mapped;
+    } else if (/[a-z0-9 .,;:()%/+\-—]/.test(ch)) {
+      out += ch;
+    } else if (ch === '₽' || ch === '\u20bd') {
+      out += ' RUB';
+    } else if (ch === '$') {
+      out += ' USD';
+    } else if (ch === '\n') {
+      out += ' ';
+    }
+    // остальные символы (включая кириллицу вне маппинга) пропускаем
+  }
+  return out;
+}
+
 router.post('/', (req, res) => {
   const { params, solution, model } = req.body;
   if (!params || !solution) {
@@ -126,44 +161,49 @@ router.post('/export/pdf', (req, res) => {
     const objTypeName = (params.objectTypeName || 'Объект');
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="расчёт_роботизации_${new Date().toISOString().slice(0, 10)}.pdf"`);
+    // Имя файла ASCII-only для совместимости с HTTP-заголовками
+    const fname = 'robotics_calc_' + new Date().toISOString().slice(0, 10) + '.pdf';
+    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    // Дополнительно: RFC 5987 для UTF-8 имени
+    const utf8Name = encodeURIComponent('расчёт_роботизации_' + new Date().toISOString().slice(0, 10) + '.pdf');
+    res.setHeader("Content-Disposition", "attachment; filename=\"" + fname + "\"; filename*=UTF-8''" + utf8Name);
 
     doc.pipe(res);
 
     doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e293b');
-    doc.text('Результаты расчёта роботизации', { align: 'center' });
+    doc.text('Rezultaty raschyota robotizatsii (Robotic calculation report)', { align: 'center' });
     doc.moveDown();
     doc.fontSize(11).font('Helvetica').fillColor('#64748b');
-    doc.text(`Отрасль: ${indName}  |  Объект: ${objTypeName}`, { align: 'center' });
-    doc.text(`Дата расчёта: ${new Date().toLocaleString('ru-RU')}`, { align: 'center' });
+    doc.text('Industry / Otrasl: ' + toAscii(indName) + '  |  Object / Obekt: ' + toAscii(objTypeName), { align: 'center' });
+    doc.text('Calculation date: ' + new Date().toLocaleString('ru-RU'), { align: 'center' });
     doc.moveDown();
-    doc.text('Данный результат является предварительной оценкой и требует верификации при обследовании объекта.', { align: 'center', fontSize: 9, fillColor: '#ef4444' });
+    doc.text('Preliminary estimate - requires verification at site survey.', { align: 'center', fontSize: 9, fillColor: '#ef4444' });
     doc.moveDown(2);
 
     doc.fontSize(14).font('Helvetica-Bold').fillColor('#0f172a');
-    doc.text('1. Параметры объекта');
+    doc.text('1. Object parameters');
     doc.moveDown();
     doc.fontSize(10).font('Helvetica').fillColor('#334155');
     if (params) {
       Object.keys(params).forEach((k) => {
         if (['token','password','password_hash','secret'].includes(k.toLowerCase())) return;
-        doc.text(`${k}: ${params[k]}`);
+        doc.text(toAscii(k) + ': ' + String(params[k] == null ? '' : params[k]));
       });
     }
     doc.moveDown(2);
 
     doc.fontSize(14).font('Helvetica-Bold').fillColor('#0f172a');
-    doc.text('2. Сценарии сравнения');
+    doc.text('2. Scenarios comparison');
     doc.moveDown();
 
     const scenarios = [
-      ['Без роботизации (база)', 0, result.baseScenario.totalAnnualOpex, 0, 0, result.baseScenario.payback > 0 ? `${result.baseScenario.payback.toFixed(1)} лет` : '—', '0.0%', 0],
-      ['Покупка оборудования', Math.round(result.purchaseScenario.totalCapex), Math.round(result.purchaseScenario.totalAnnualOpex), Math.round(result.purchaseScenario.annualSavings), Math.round(result.purchaseScenario.netAnnualEffect), result.purchaseScenario.payback > 0 ? `${result.purchaseScenario.payback.toFixed(1)} лет` : '—', `${result.purchaseScenario.roi.toFixed(1)}%`, result.purchaseScenario.robotCount],
-      ['Роботы как услуга (RaaS)', Math.round(result.raasScenario.totalCapex), Math.round(result.raasScenario.totalAnnualOpex), Math.round(result.raasScenario.annualSavings), Math.round(result.raasScenario.netAnnualEffect), result.raasScenario.payback > 0 ? `${result.raasScenario.payback.toFixed(1)} лет` : '—', `${result.raasScenario.roi.toFixed(1)}%`, result.raasScenario.robotCount],
-      ['Заёмные средства (кредит)', Math.round(result.loanScenario.totalCapex), Math.round(result.loanScenario.totalAnnualOpex), Math.round(result.loanScenario.annualSavings), Math.round(result.loanScenario.netAnnualEffect), result.loanScenario.payback > 0 ? `${result.loanScenario.payback.toFixed(1)} лет` : '—', `${result.loanScenario.roi.toFixed(1)}%`, result.loanScenario.robotCount],
+      ['No robotics (base)', 0, Math.round(result.baseScenario.totalAnnualOpex), 0, 0, result.baseScenario.payback > 0 ? result.baseScenario.payback.toFixed(1) + ' yr' : '-', '0.0%', 0],
+      ['Purchase', Math.round(result.purchaseScenario.totalCapex), Math.round(result.purchaseScenario.totalAnnualOpex), Math.round(result.purchaseScenario.annualSavings), Math.round(result.purchaseScenario.netAnnualEffect), result.purchaseScenario.payback > 0 ? result.purchaseScenario.payback.toFixed(1) + ' yr' : '-', result.purchaseScenario.roi.toFixed(1) + '%', result.purchaseScenario.robotCount],
+      ['RaaS', Math.round(result.raasScenario.totalCapex), Math.round(result.raasScenario.totalAnnualOpex), Math.round(result.raasScenario.annualSavings), Math.round(result.raasScenario.netAnnualEffect), result.raasScenario.payback > 0 ? result.raasScenario.payback.toFixed(1) + ' yr' : '-', result.raasScenario.roi.toFixed(1) + '%', result.raasScenario.robotCount],
+      ['Loan', Math.round(result.loanScenario.totalCapex), Math.round(result.loanScenario.totalAnnualOpex), Math.round(result.loanScenario.annualSavings), Math.round(result.loanScenario.netAnnualEffect), result.loanScenario.payback > 0 ? result.loanScenario.payback.toFixed(1) + ' yr' : '-', result.loanScenario.roi.toFixed(1) + '%', result.loanScenario.robotCount],
     ];
 
-    const headers = ['Сценарий', 'CAPEX', 'OPEX/год', 'Экономия/год', 'Чистый эффект', 'Окупаемость', 'ROI', 'Роботы'];
+    const headers = ['Scenario', 'CAPEX', 'OPEX/yr', 'Savings/yr', 'Net effect', 'Payback', 'ROI', 'Robots'];
     const xStart = 60;
     const colWidths = [30, 180, 150, 150, 150, 110, 90, 70];
     let yPos = doc.y;
@@ -184,30 +224,58 @@ router.post('/export/pdf', (req, res) => {
     });
 
     doc.moveDown(2);
+    // Сводка по ключевым метрикам (NPV/IRR/DPP) на отдельной полосе
     doc.fontSize(14).font('Helvetica-Bold').fillColor('#0f172a');
-    doc.text('3. Детализация CAPEX (сценарий покупки)');
+    doc.text('2a. Key financial metrics (Purchase scenario)');
+    doc.moveDown();
+    doc.fontSize(11).font('Helvetica').fillColor('#0f172a');
+    const pur = result.purchaseScenario;
+    const sLabels = [
+      ['IRR (Internal Rate of Return):', pur && pur.irr ? (pur.irr * 100).toFixed(2) + '%' : 'n/a'],
+      ['DPP (Discounted Payback Period):', pur && pur.dpp && pur.dpp > 0 ? pur.dpp.toFixed(2) + ' years' : 'n/a'],
+      ['Payback (simple):', pur && pur.payback > 0 ? pur.payback.toFixed(2) + ' years' : 'n/a'],
+      ['NPV (Net Present Value):', Math.round(pur.npv || 0).toLocaleString('en-US') + ' RUB'],
+      ['ROI (cumulative / Investment):', (pur.roi || 0).toFixed(1) + '%'],
+      ['TCO over horizon: ', Math.round(pur.tco || 0).toLocaleString('en-US') + ' RUB'],
+    ];
+    sLabels.forEach(function(r) {
+      doc.text(r[0] + ' ' + r[1], xStart);
+    });
+    // Sanity warnings
+    if (pur && pur.realism && Array.isArray(pur.realism.warnings) && pur.realism.warnings.length) {
+      doc.moveDown();
+      doc.fontSize(11).fillColor('#b91c1c').text('Realism check warnings (confidence ' + (pur.realism.confidenceScore || 0) + '%):');
+      doc.fontSize(9).fillColor('#0f172a');
+      pur.realism.warnings.forEach(function(w) {
+        doc.text('- [' + (w.severity || '').toUpperCase() + '] ' + toAscii(w.message || ''));
+      });
+    }
+    doc.moveDown(2);
+
+    doc.fontSize(14).font('Helvetica-Bold').fillColor('#0f172a');
+    doc.text('3. CAPEX breakdown (Purchase scenario)');
     doc.moveDown();
     doc.fontSize(10).font('Helvetica').fillColor('#334155');
     const capexRows = [
-      ['Оборудование', Math.round(result.purchaseScenario.equipmentCost)],
-      ['Инфраструктура', Math.round(result.purchaseScenario.infrastructureCost)],
-      ['ПО', Math.round(result.purchaseScenario.softwareCost)],
-      ['Интеграция', Math.round(result.purchaseScenario.integrationCost)],
-      ['Обучение', Math.round(result.purchaseScenario.trainingCost)],
-      ['Резерв', Math.round(result.purchaseScenario.capexReserve)],
-      ['Итого CAPEX', Math.round(result.purchaseScenario.totalCapex)],
+      ['Equipment', Math.round(result.purchaseScenario.equipmentCost)],
+      ['Infrastructure', Math.round(result.purchaseScenario.infrastructureCost)],
+      ['Software', Math.round(result.purchaseScenario.softwareCost)],
+      ['Integration', Math.round(result.purchaseScenario.integrationCost)],
+      ['Training', Math.round(result.purchaseScenario.trainingCost)],
+      ['Reserve', Math.round(result.purchaseScenario.capexReserve)],
+      ['TOTAL CAPEX', Math.round(result.purchaseScenario.totalCapex)],
     ];
     capexRows.forEach((row, idx) => {
       doc.text(row[0], xStart, yPos);
-      doc.text(`${row[1].toLocaleString('ru-RU')} ₽`, xStart + 200, yPos, { align: 'right' });
+      doc.text(row[1].toLocaleString('en-US') + ' RUB', xStart + 200, yPos, { align: 'right' });
       yPos += 18;
       if (yPos > 700) { doc.addPage(); yPos = 50; }
     });
 
     doc.moveDown();
-    doc.text('4. Амортизация (линейный метод, ' + result.purchaseScenario.assumptions.depreciationYears + ' лет)', yPos);
+    doc.text('4. Depreciation schedule (linear, ' + (result.purchaseScenario.assumptions && result.purchaseScenario.assumptions.depreciationYears ? result.purchaseScenario.assumptions.depreciationYears : '5') + ' yr)', yPos);
     yPos += 16;
-    const depHeaders = ['Год', 'Амортизация', 'Накопленная', 'Бал. стоимость'];
+    const depHeaders = ['Year', 'Depreciation', 'Accumulated', 'Book value'];
     depHeaders.forEach((h, i) => {
       doc.font('Helvetica-Bold').fillColor('#475569');
       doc.text(h, xStart + i * 100, yPos, { width: 100, align: 'right' });
@@ -215,10 +283,10 @@ router.post('/export/pdf', (req, res) => {
     yPos += 16;
     result.purchaseScenario.depreciationSchedule.forEach((d) => {
       doc.font('Helvetica').fillColor('#0f172a');
-      doc.text(d.year, xStart, yPos, { width: 100, align: 'right' });
-      doc.text(`${Math.round(d.depreciation).toLocaleString('ru-RU')} ₽`, xStart + 100, yPos, { width: 100, align: 'right' });
-      doc.text(`${Math.round(d.accumulatedDepreciation).toLocaleString('ru-RU')} ₽`, xStart + 200, yPos, { width: 100, align: 'right' });
-      doc.text(`${Math.round(d.bookValue).toLocaleString('ru-RU')} ₽`, xStart + 300, yPos, { width: 100, align: 'right' });
+      doc.text(String(d.year), xStart, yPos, { width: 100, align: 'right' });
+      doc.text(Math.round(d.depreciation).toLocaleString('en-US') + ' RUB', xStart + 100, yPos, { width: 100, align: 'right' });
+      doc.text(Math.round(d.accumulatedDepreciation).toLocaleString('en-US') + ' RUB', xStart + 200, yPos, { width: 100, align: 'right' });
+      doc.text(Math.round(d.bookValue).toLocaleString('en-US') + ' RUB', xStart + 300, yPos, { width: 100, align: 'right' });
       yPos += 16;
       if (yPos > 700) { doc.addPage(); yPos = 50; }
     });
