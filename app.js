@@ -2006,7 +2006,9 @@ function buildSimulatorPanelHtml(results) {
   // Адаптивная высота графика: компактная когда мало шагов, во всю ширину — когда много
   var snapLen = (state.sim && state.sim.snapshot && state.sim.snapshot.history) ? state.sim.snapshot.history.length : 0;
   var chartHeight = snapLen >= 30 ? 280 : (snapLen >= 12 ? 220 : 160);
-  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 ' + chartHeight + '" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg></div>';
+  // Адаптивная высота графика: используем 320 как «виртуальный» viewBox,
+  // а CSS растягивает SVG на весь wrap через preserveAspectRatio="none".
+  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div>';
   // Скруббер для прокрутки истории + двойные стрелки
   html += '<div class="sim-scrubber" id="simScrubberBox">';
   html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubFirst" title="К началу">⏮</button>';

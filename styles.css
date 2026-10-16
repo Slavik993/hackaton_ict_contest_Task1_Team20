@@ -1457,7 +1457,7 @@ body {
   display: grid;
   grid-template-columns: 1fr 280px;
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
 }
 @media (max-width: 900px) {
   .sim-layout { grid-template-columns: 1fr; }
@@ -1469,6 +1469,15 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 14px 16px;
+}
+.sim-chart-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 480px;
+}
+.sim-kpi-card {
+  display: flex;
+  flex-direction: column;
 }
 .sim-chart-header {
   display: flex;
@@ -1496,12 +1505,17 @@ body {
 .sim-chart-wrap {
   background: #f8fafc;
   border-radius: var(--radius-sm);
-  padding: 4px;
+  padding: 6px;
+  flex: 1 1 auto;
+  min-height: 340px;
+  display: flex;
 }
 .sim-chart {
   width: 100%;
-  height: auto;
+  height: 100%;
   display: block;
+  flex: 1 1 auto;
+  min-height: 320px;
 }
 
 /* Скруббер для прокрутки истории */
