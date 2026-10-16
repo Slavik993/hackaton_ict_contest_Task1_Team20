@@ -50,6 +50,77 @@ function getApplicableSolutions(objectTypeId) {
   });
 }
 
+/**
+ * Умный дефолтный рейтинг применимых решений.
+ *
+ * Возвращает массив из { solution, score, reasons[] }, отсортированный по
+ * убыванию score. Используется для автовыбора топ-3 на Шаге 2 и для
+ * обоснования, почему именно эти решения рекомендованы.
+ *
+ * Факторы скоринга (по убыванию веса):
+ *  1) catalog fit (% совпадения с типом объекта) — 35%
+ *  2) реалистичная окупаемость по метрикам решения — 25%
+ *  3) надёжность / reliability — 15%
+ *  4) адекватность цены (capex/operation) для площади объекта — 15%
+ *  5) сбалансированная производительность (throughput / accuracy) — 10%
+ */
+function getTopRecommendations(objectTypeId, params, limit) {
+  var applicable = getApplicableSolutions(objectTypeId);
+  if (!applicable.length) return [];
+  var p = params || state.customParams || {};
+  var area = safeFloat(p.area, 1000);
+  var operations = safeFloat(p.operations, 1000);
+  var staff = safeFloat(p.staff, 10);
+  var salary = safeFloat(p.salary, 80000);
+
+  var scored = applicable.map(function(s) {
+    var m = s.metrics || {};
+    var fit = safeFloat(s.fit, 0);
+
+    // Реалистичная оценка срока окупаемости без серверного расчёта:
+    // используем метрики напрямую.
+    var capex = safeFloat(m.capexPerUnit, 0);
+    var laborReduction = safeFloat(m.laborReduction, 0);
+    var productivityLift = safeFloat(m.productivityLift, 0);
+    var co2 = safeFloat(m.co2Reduction, 0);
+    var reliability = safeFloat(m.reliability, 70);
+    var accuracy = safeFloat(m.accuracy, 90);
+    var throughput = safeFloat(m.throughput, 0);
+
+    var annualLabor = staff * salary * 12;
+    var annualSavings = annualLabor * (laborReduction + productivityLift) || 0;
+
+    // Грубая оценка капитальных расходов на 1 робота + прочее оборудование
+    var annualSavingsPerRobot = annualSavings / Math.max(1, staff * 0.1);
+    var estPaybackYears = capex > 0 && annualSavingsPerRobot > 0
+      ? capex / annualSavingsPerRobot : 99;
+
+    // Скоринг (0..100)
+    var scoreFit = Math.min(100, fit);
+    var scorePayback = estPaybackYears < 1 ? 0 : estPaybackYears < 3 ? 100 - estPaybackYears * 10 : estPaybackYears < 6 ? 70 - (estPaybackYears - 3) * 10 : Math.max(0, 30 - (estPaybackYears - 6) * 5);
+    var scoreReliability = Math.min(100, reliability);
+    var scorePrice = capex <= 0 ? 50 : (capex < 500000 ? 90 : capex < 1500000 ? 75 : capex < 3000000 ? 55 : 30);
+    var scorePerf = (Math.min(100, throughput * 2) + accuracy) / 2;
+    var totalScore = scoreFit * 0.35 + scorePayback * 0.25 + scoreReliability * 0.15 + scorePrice * 0.15 + scorePerf * 0.10;
+
+    var reasons = [];
+    if (fit >= 80) reasons.push('Высокий % совпадения с типом объекта (' + Math.round(fit) + '%)');
+    else if (fit >= 50) reasons.push('Умеренное совпадение (' + Math.round(fit) + '%)');
+    if (estPaybackYears < 3 && estPaybackYears > 0) reasons.push('Прогноз окупаемости ~' + estPaybackYears.toFixed(1) + ' года');
+    if (reliability >= 95) reasons.push('Высокая надёжность (' + reliability + '%)');
+    if (accuracy >= 95) reasons.push('Высокая точность (' + accuracy + '%)');
+    if (capex > 0 && capex < 1500000) reasons.push('Конкурентная цена оборудования');
+    if (co2 > 0) reasons.push('Снижение CO₂ на ' + co2.toFixed(1) + ' т/год');
+    if (productivityLift > 0.1) reasons.push('Рост производительности +' + Math.round(productivityLift * 100) + '%');
+    if (!reasons.length) reasons.push('Подходит по базовым метрикам');
+
+    return { solution: s, score: totalScore, reasons: reasons, estPaybackYears: estPaybackYears };
+  });
+
+  scored.sort(function(a, b) { return b.score - a.score; });
+  return scored.slice(0, limit || 3);
+}
+
 function getSolution(solutionId) {
   return (HACKATHON_DATA.solutions || []).find(function(s) { return s.id === solutionId; });
 }
@@ -300,8 +371,35 @@ function renderStep2(el) {
   var solutions = getApplicableSolutions(state.selectedObjectType);
   var types = HACKATHON_DATA.solutionTypes || [];
 
+  // ------------------------------------------------------------
+  // Авто-выбор топ-3 рекомендаций, если пользователь ещё ничего не выбрал
+  // ------------------------------------------------------------
+  if (!state.selectedSolutions || state.selectedSolutions.length === 0) {
+    var recos = getTopRecommendations(state.selectedObjectType, state.customParams || {}, 3);
+    if (recos.length) {
+      state.selectedSolutions = recos.map(function(r) { return r.solution; });
+      state._autoRecommendedReasons = recos;
+      if (!state.calculationSolutionId) state.calculationSolutionId = recos[0].solution.id;
+    }
+  }
+  // Если есть кэшированные рекомендации — используем их
+  var autoRecos = state._autoRecommendedReasons || [];
+
   var html = '<h2 class="section-title">Каталог решений</h2>';
-  html += '<p class="section-desc">Доступные роботизированные решения для типа объекта &ldquo;' + getObjectTypeName() + '&rdquo;. Выберите до 3 решений для сравнения.</p>';
+  html += '<p class="section-desc">Доступные роботизированные решения для типа объекта &ldquo;' + getObjectTypeName() + '&rdquo;. <strong>Уже выбрано топ-3 по версии рекомендательной системы</strong> — вы можете изменить состав в любой момент.</p>';
+
+  // Блок с лучшим выбором
+  if (autoRecos.length) {
+    var top = autoRecos[0];
+    html += '<div class="ai-top-recommendation">';
+    html += '<div class="ai-top-icon">★</div>';
+    html += '<div class="ai-top-body">';
+    html += '<div class="ai-top-label">Рекомендация платформы (скор ' + Math.round(top.score) + '/100)</div>';
+    html += '<div class="ai-top-name">' + escapeHTML(top.solution.name) + ' <span class="muted">— ' + escapeHTML(top.solution.vendor || '') + '</span></div>';
+    html += '<div class="ai-top-reasons">' + top.reasons.map(function(r) { return '<span class="ai-reason-pill">' + escapeHTML(r) + '</span>'; }).join('') + '</div>';
+    html += '</div>';
+    html += '</div>';
+  }
 
   html += '<div class="search-bar">';
   html += '<input type="text" class="form-input" id="searchInput" placeholder="Поиск по названию или вендору..." value="' + escapeAttr(state.searchQuery) + '">';

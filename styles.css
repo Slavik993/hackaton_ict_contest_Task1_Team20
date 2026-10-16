@@ -1644,3 +1644,51 @@ body {
   font-weight: 800;
   flex: 0 0 32px;
 }
+
+/* Топ-рекомендация ИИ на Шаге 2 */
+.ai-top-recommendation {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(79,124,255,0.08), rgba(245,158,11,0.10));
+  border: 1px solid rgba(79,124,255,0.25);
+  border-left: 4px solid #4f7cff;
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+}
+.ai-top-icon {
+  width: 36px; height: 36px;
+  flex: 0 0 36px;
+  border-radius: 8px;
+  background: #4f7cff;
+  color: #fff;
+  display: grid; place-items: center;
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+.ai-top-body { min-width: 0; }
+.ai-top-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #4f7cff;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.ai-top-name {
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--color-text);
+  margin-bottom: 6px;
+}
+.ai-top-name .muted { color: var(--color-text-secondary); font-weight: 500; }
+.ai-top-reasons { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-reason-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(79,124,255,0.12);
+  color: #1d4ed8;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
