@@ -1531,9 +1531,14 @@ function buildResultsHTML() {
   html += resultItem('ROI за 3 года', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
   html += resultItem('NPV', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
   html += resultItem('TCO', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
+  html += resultItem('IRR (внутр. норма)', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
+  html += resultItem('DPP (диск. окупаемость)', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
   html += resultItem('Потребность в роботах', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
   html += resultItem('Снижение CO₂', results.baseScenario, results.purchaseScenario, results.raasScenario, results.loanScenario);
   html += '</div>';
+
+  // Объяснение ключевых метрик — почему они важны и что рекомендовать
+  html += buildMetricsGlossaryHTML(results);
 
   html += buildScenarioComparisonTable(results);
   html += buildCapexBreakdown(results.purchaseScenario);
@@ -1664,6 +1669,108 @@ function buildCapexBreakdown(purchaseScenario) {
   return html;
 }
 
+// ===========================================================================
+// Пояснения к ключевым экономическим показателям
+// ===========================================================================
+function buildMetricsGlossaryHTML(results) {
+  var irr = results.purchaseScenario && results.purchaseScenario.irr;
+  var dpp = results.purchaseScenario && results.purchaseScenario.dpp;
+  var payback = results.payback;
+  var npv = results.npv;
+
+  function verdict(text, tone) {
+    return '<span class="metric-verdict metric-verdict-' + tone + '">' + text + '</span>';
+  }
+  function advice(label, test, yesText, noText, yesTone, noTone) {
+    var ok;
+    try { ok = test(); } catch (e) { ok = false; }
+    return '<li>' + label + ' ' + (ok ? verdict(yesText, yesTone) : verdict(noText, noTone)) + '</li>';
+  }
+
+  var html = '';
+  html += '<div class="metrics-glossary" style="margin-top:24px;padding:18px 20px;background:var(--color-surface-alt);border:1px solid var(--color-border);border-radius:var(--radius-md)">';
+  html += '<h3 class="panel-title">Что означают ключевые показатели и что рекомендовать</h3>';
+  html += '<p class="section-desc" style="margin-bottom:14px">Эти 5 метрик используются инвесторами и CFO для принятия решений о проектах роботизации. Здесь — короткое объяснение, как их читать.</p>';
+
+  html += '<div class="metric-grid">';
+
+  // NPV
+  html += '<div class="metric-card">';
+  html += '<div class="metric-card-head"><strong>NPV</strong> <span class="metric-sub">Net Present Value</span></div>';
+  html += '<p class="metric-why"><strong>Зачем:</strong> показывает, сколько денег принесёт проект сверх инвестиций с учётом стоимости денег во времени (дисконтирования).</p>';
+  html += '<p class="metric-rule"><strong>Правило:</strong> NPV > 0 — проект создаёт стоимость. NPV &lt; 0 — проект стоит дороже, чем приносит.</p>';
+  html += '<ul class="metric-advice">';
+  html += advice('Сейчас по сценарию Покупка NPV = ', function() { return npv > 0; }, 'положительный (' + formatCurrency(npv) + ') — проект окупается с учётом дисконта. ✓', 'отрицательный — стоит пересмотреть параметры или сценарий.', 'success', 'danger');
+  html += '</ul>';
+  html += '</div>';
+
+  // IRR
+  html += '<div class="metric-card">';
+  html += '<div class="metric-card-head"><strong>IRR</strong> <span class="metric-sub">внутренняя норма доходности</span></div>';
+  html += '<p class="metric-why"><strong>Зачем:</strong> ставка дисконтирования, при которой NPV = 0. По сути — реальная «доходность» проекта.</p>';
+  html += '<p class="metric-rule"><strong>Правило:</strong> IRR должна быть выше ставки дисконтирования (мы берём 10%). Чем больше запас — тем безопаснее.</p>';
+  html += '<ul class="metric-advice">';
+  html += advice('IRR = ', function() { return irr && isFinite(irr) && irr > 0.10; },
+    irr && isFinite(irr) ? (irr * 100).toFixed(1) + '% — выше ставки дисконта. ✓' : 'нет данных',
+    irr && isFinite(irr) ? (irr * 100).toFixed(1) + '% — ниже ставки дисконта, проект едва покрывает стоимость капитала.' : 'нет данных',
+    'success', 'warning');
+  html += '<li>Рекомендация: целиться в IRR <strong>≥ 15%</strong> — это даёт запас 5 п.п. к WACC компании.</li>';
+  html += '</ul>';
+  html += '</div>';
+
+  // Payback (простой)
+  html += '<div class="metric-card">';
+  html += '<div class="metric-card-head"><strong>Срок окупаемости</strong> <span class="metric-sub">Payback</span></div>';
+  html += '<p class="metric-why"><strong>Зачем:</strong> через сколько лет/месяцев проект выходит «в ноль».</p>';
+  html += '<p class="metric-rule"><strong>Правило:</strong> до 3 лет — отлично. 3–5 — нормально. Более 7 — рискованно.</p>';
+  html += '<ul class="metric-advice">';
+  html += advice('Payback по Покупке = ', function() { return payback > 0 && payback <= 5; },
+    payback > 0 ? formatNum(payback, 1) + ' лет — комфортный горизонт. ✓' : '—',
+    payback > 5 ? formatNum(payback, 1) + ' лет — слишком долго, рассмотрите RaaS.' : 'проект не окупается на горизонте расчёта.',
+    'success', 'warning');
+  html += '</ul>';
+  html += '</div>';
+
+  // DPP
+  html += '<div class="metric-card">';
+  html += '<div class="metric-card-head"><strong>DPP</strong> <span class="metric-sub">дисконтированный срок окупаемости</span></div>';
+  html += '<p class="metric-why"><strong>Зачем:</strong> то же, что и Payback, но учитывает стоимость денег во времени. Обычно длиннее простого payback.</p>';
+  html += '<p class="metric-rule"><strong>Правило:</strong> DPP ≤ 2 × Payback. Если DPP значительно больше Payback — проект чувствителен к ставке дисконта.</p>';
+  html += '<ul class="metric-advice">';
+  html += advice('DPP = ', function() { return dpp > 0 && dpp <= 10; },
+    dpp > 0 ? formatNum(dpp, 1) + ' лет — допустимо.' : '—',
+    dpp > 10 ? formatNum(dpp, 1) + ' лет — слишком долго, повышайте годовую экономию.' : 'не окупается.',
+    'success', 'warning');
+  html += '</ul>';
+  html += '</div>';
+
+  // TCO + ROI
+  html += '<div class="metric-card">';
+  html += '<div class="metric-card-head"><strong>TCO и ROI</strong> <span class="metric-sub">Total Cost of Ownership, Return on Investment</span></div>';
+  html += '<p class="metric-why"><strong>Зачем:</strong> TCO — это сколько проект стоит за весь горизонт. ROI — сколько проект вернёт относительно инвестиций.</p>';
+  html += '<p class="metric-rule"><strong>Правило:</strong> ROI по формуле ТЗ = (накопленный эффект − инвестиции) / инвестиции × 100%. Учитывает остаточный ручной труд и замену оборудования.</p>';
+  html += '<ul class="metric-advice">';
+  html += '<li>Для сравнения альтернатив (Покупка vs RaaS vs Кредит) используйте IRR и NPV — они учитывают временну́ю стоимость денег и потому точнее.</li>';
+  html += '<li>ROI может быть высоким даже у плохого проекта, если инвестиции малы. <strong>Всегда смотрите NPV рядом.</strong></li>';
+  html += '</ul>';
+  html += '</div>';
+
+  html += '</div>';
+
+  html += '<div class="metric-recommendations">';
+  html += '<h4 class="panel-title" style="margin-top:8px">Что порекомендовать дальше</h4>';
+  html += '<ol>';
+  html += '<li>Перейти на <strong>Шаг 4</strong> и запустить экономический симулятор — он покажет, как показатели меняются помесячно с учётом инфляции OPEX и шоков.</li>';
+  html += '<li>Если какой-то сценарий проваливается по IRR/Payback — попробуйте изменить модель (Покупка → RaaS) или уменьшить срок амортизации.</li>';
+  html += '<li>Сравните топ-3 решения: обычно разброс IRR между ними показывает, насколько критичен выбор конкретного робота.</li>';
+  html += '<li>Скачайте <strong>PDF-отчёт</strong> для презентации руководству — там детализация CAPEX/OPEX и таблица амортизации.</li>';
+  html += '</ol>';
+  html += '</div>';
+
+  html += '</div>';
+  return html;
+}
+
 function resultItem(label, baseScenario, purchase, raas, loan) {
   var scenarios = [baseScenario, purchase, raas, loan].filter(function(s) { return s; });
   var keys = {
@@ -1675,6 +1782,8 @@ function resultItem(label, baseScenario, purchase, raas, loan) {
     'ROI за 3 года': 'roi',
     'NPV': 'npv',
     'TCO': 'tco',
+    'IRR (внутр. норма)': 'irr',
+    'DPP (диск. окупаемость)': 'dpp',
     'Потребность в роботах': 'robotCount',
     'Снижение CO₂': 'co2',
   };
@@ -1697,10 +1806,10 @@ function resultItem(label, baseScenario, purchase, raas, loan) {
     }
   } else if (valKey === 'co2') {
     display = formatNum(value, 1) + ' т/год';
-  } else if (valKey === 'roi') {
-    display = formatNum(value, 1) + ' %';
-  } else if (valKey === 'payback') {
-    // ВАЖНО: payback — это ГОДЫ, не рубли!
+  } else if (valKey === 'roi' || valKey === 'irr') {
+    display = formatNum(value * (valKey === 'irr' ? 100 : 1), 1) + ' %';
+  } else if (valKey === 'payback' || valKey === 'dpp') {
+    // ВАЖНО: payback/dpp — это ГОДЫ, не рубли!
     display = (value > 0 && isFinite(value)) ? formatNum(value, 1) + ' лет' : '—';
   } else if (valKey === 'robotCount') {
     display = formatNum(value, 0) + ' шт.';
