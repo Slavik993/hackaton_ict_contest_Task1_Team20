@@ -302,9 +302,10 @@ function calcScenario(params, solution, scenarioType) {
   if (adjustedCapex > 0) {
     const annualNet = annualSavings - totalAnnualOpex;
     const cumulativeEffect = annualNet * horizon;
-    roi = (cumulativeEffect / adjustedCapex) * 100;           // ROI на полном горизонте
+    // Формула по ТЗ: ROI = (накопленный эффект за горизонт - инвестиции) / инвестиции × 100%
+    roi = ((cumulativeEffect - adjustedCapex) / adjustedCapex) * 100;        // ROI на полном горизонте
     const cumulativeNet3 = annualNet * Math.min(3, horizon);
-    roi3y = (cumulativeNet3 / adjustedCapex) * 100;          // ROI за 3 года (для UI)
+    roi3y = ((cumulativeNet3 - adjustedCapex) / adjustedCapex) * 100;        // ROI за 3 года (для UI)
     if (!isFinite(roi)) roi = 0;
     if (!isFinite(roi3y)) roi3y = 0;
   }

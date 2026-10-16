@@ -1167,15 +1167,17 @@ var laborSavings = annualLaborCost * laborReduction;
   }
 
   // ROI на горизонте расчёта (а не «магические 3 года»)
+  // Формула по ТЗ: ROI = (накопленный эффект за горизонт − инвестиции) / инвестиции × 100%
   var roi = 0;
   var roi3y = 0;
   var roiHorizon = 0;
   if (totalCapex > 0) {
     var cumulativeNet = annualNet * horizon;
-    roi = (cumulativeNet / totalCapex) * 100;           // ROI на весь горизонт
+    roi = ((cumulativeNet - totalCapex) / totalCapex) * 100;            // ROI на весь горизонт (по ТЗ)
+    roiHorizon = roi;
 
     var cumulativeNet3 = annualNet * Math.min(3, horizon);
-    roi3y = (cumulativeNet3 / totalCapex) * 100;        // ROI за 3 года (для UI)
+    roi3y = ((cumulativeNet3 - totalCapex) / totalCapex) * 100;         // ROI за 3 года (по ТЗ)
     roiHorizon = roi;
     if (!isFinite(roi3y)) roi3y = 0;
     if (!isFinite(roiHorizon)) roiHorizon = 0;
