@@ -2410,9 +2410,28 @@ function drawSimulatorChart(history, baseline) {
     .concat(series.npv.map(function(v){ return v; }))
     .filter(function(v){ return Number.isFinite(v); });
 
-  var maxAbs = allValues.length ? Math.max.apply(null, allValues.map(Math.abs)) : 0;
-  var maxV = maxAbs > 0 ? maxAbs : 1;
+  // Ограничиваем NPV отдельным окном: длинный хвост NPV растягивает ось,
+  // оставляя мало места для фактических колебаний шагов.
+  // Показываем 99-й перцентиль, чтобы одиночные спайки не портили шкалу.
+  function percentile(arr, q) {
+    if (!arr.length) return 0;
+    var sorted = arr.slice().sort(function(a, b) { return a - b; });
+    var i = Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)));
+    return sorted[i];
+  }
+  // Используем maxAbs среди CAPEX/OPEX/сбережений/потока (без длинного NPV-хвоста)
+  var primaryValues = []
+    .concat(series.capex, series.opex, series.savings, series.cashflow)
+    .filter(function(v){ return Number.isFinite(v); });
+  var pHigh = percentile(primaryValues, 0.95);
+  var pLow = percentile(primaryValues, 0.05);
+  var maxV = Math.max(Math.abs(pHigh), Math.abs(pLow), 1);
   var minV = -maxV;
+  if (maxV < 1e6) {
+    // небольшие значения — округлим до ближайшего 1 тыс для плотных лейблов
+    maxV = Math.ceil(maxV / 1000) * 1000;
+    minV = -maxV;
+  }
 
   var n = Math.max(2, series.capex.length || 1);
 
@@ -3410,12 +3429,12 @@ function setupWelcomeScreen() {
   var btnStart = document.getElementById('welcomeStart');
   var btnSkip = document.getElementById('welcomeSkip');
   if (!helpBtn) {
-    // Если платформа встроена и кнопки нет — добавляем динамически
     helpBtn = document.createElement('button');
     helpBtn.id = 'welcomeHelpBtn';
     helpBtn.className = 'welcome-help-btn';
-    helpBtn.title = 'Что делает платформа';
+    helpBtn.title = 'Что делает платформа?';
     helpBtn.textContent = '?';
+    helpBtn.type = 'button';
     document.body.appendChild(helpBtn);
   }
   if (!screen) return;
@@ -3435,32 +3454,33 @@ function setupWelcomeScreen() {
       try { localStorage.setItem('roboplatform_welcome_seen', '1'); } catch(e) {}
     }
   }
-  // Используем stopPropagation, чтобы клик по кнопке не дошёл до других обработчиков
-  function openHandler(e) {
+
+  // Используем capture и addEventListener — самое устойчивое назначение,
+  // даже если поверх кнопки есть другие обработчики от assistant.js
+  helpBtn.addEventListener('click', function(e) {
     if (e) { e.preventDefault(); e.stopPropagation(); }
     showWelcome();
-  }
-  function startHandler(e) {
-    if (e) { e.preventDefault(); }
-    hideWelcome(false);
-  }
-  function skipHandler(e) {
-    if (e) { e.preventDefault(); }
-    hideWelcome(true);
-  }
-  // Дублируем обработчики чтобы быть устойчивым
-  helpBtn.onclick = openHandler;
-  if (btnStart) btnStart.onclick = startHandler;
-  if (btnSkip) btnSkip.onclick = skipHandler;
+  }, true);
+  // На случай тача — отдельно pointerdown
+  helpBtn.addEventListener('pointerdown', function(e) {
+    if (e) { e.stopPropagation(); }
+  }, true);
+  if (btnStart) btnStart.addEventListener('click', function() { hideWelcome(false); });
+  if (btnSkip) btnSkip.addEventListener('click', function() { hideWelcome(true); });
   // Закрытие по клику на фон welcome-экрана
-  screen.onclick = function(e) {
+  screen.addEventListener('click', function(e) {
     if (e.target === screen) hideWelcome(false);
-  };
+  });
 }
 
 function init() {
   loadState();
-  setupWelcomeScreen();
+  // Welcome может быть ещё не отрендерен, если скрипт выполняется до DOMContentLoaded.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupWelcomeScreen);
+  } else {
+    setupWelcomeScreen();
+  }
 
   document.querySelectorAll('.step').forEach(function(el) {
     el.addEventListener('click', function() {
