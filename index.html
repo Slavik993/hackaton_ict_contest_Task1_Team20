@@ -48,6 +48,56 @@
     <section class="step-content" id="stepContent" aria-live="polite"></section>
   </main>
 
+  <!-- Welcome screen — появляется при первом заходе (или при нажатии «?» в углу) -->
+  <div id="welcomeScreen" class="welcome-screen" style="display:none">
+    <div class="welcome-card">
+      <div class="welcome-header">
+        <div class="welcome-logo">🤖</div>
+        <h2 class="welcome-title">Платформа подбора роботизированных решений</h2>
+        <p class="welcome-subtitle">За <strong>40 секунд</strong> — что вы получите:</p>
+      </div>
+      <div class="welcome-grid">
+        <div class="welcome-item">
+          <div class="welcome-num">1</div>
+          <div>
+            <strong>Выбор объекта</strong>
+            <p>Отрасль → тип объекта → параметры (площадь, персонал, режим работы).</p>
+          </div>
+        </div>
+        <div class="welcome-item">
+          <div class="welcome-num">2</div>
+          <div>
+            <strong>Топ-3 решений</strong>
+            <p>Каталог с фильтром по применимости; автоподбор с обоснованием.</p>
+          </div>
+        </div>
+        <div class="welcome-item">
+          <div class="welcome-num">3</div>
+          <div>
+            <strong>Экономика</strong>
+            <p>CAPEX, OPEX, NPV, ROI, IRR, DPP для сценариев Покупка / RaaS / Кредит.</p>
+          </div>
+        </div>
+        <div class="welcome-item">
+          <div class="welcome-num">4</div>
+          <div>
+            <strong>Симулятор</strong>
+            <p>Помесячная динамика экономики с учётом шоков и стохастики.</p>
+          </div>
+        </div>
+      </div>
+      <div class="welcome-cta">
+        <button class="btn btn-primary" id="welcomeStart">▶ Начать подбор</button>
+        <button class="btn btn-secondary" id="welcomeSkip">Не показывать снова</button>
+      </div>
+      <details class="welcome-details">
+        <summary>Что делает чат-помощник?</summary>
+        <p>Чат-помощник слева внизу помогает на каждом шаге: уточняет параметры объекта, предлагает альтернативные решения, объясняет расчёты CAPEX/OPEX/NPV/IRR/DPP и проверяет, что вы ничего не забыли. Спросите — например, «что такое IRR?» или «почему мой срок окупаемости большой?», и он даст ответ с обоснованием.</p>
+      </details>
+    </div>
+  </div>
+  <button id="welcomeHelpBtn" class="welcome-help-btn" style="display:none" title="Что делает платформа">?</button>
+
   <footer class="app-footer">
     <p>Продукт подготовлен для демонстрации реальному клиенту. Данные частично предоставлены организатором, частично сгенерированы на основе открытых источников.</p>
   </footer>

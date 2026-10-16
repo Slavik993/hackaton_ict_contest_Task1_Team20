@@ -3265,8 +3265,42 @@ function reset3DPositions() {
   });
 }
 
+// ===========================================================================
+// Welcome screen — на 40 секунд объясняем, что за платформа и как пользоваться
+// ===========================================================================
+function setupWelcomeScreen() {
+  var screen = document.getElementById('welcomeScreen');
+  var helpBtn = document.getElementById('welcomeHelpBtn');
+  var btnStart = document.getElementById('welcomeStart');
+  var btnSkip = document.getElementById('welcomeSkip');
+  if (!screen || !helpBtn) return;
+
+  // Показываем welcome при первом заходе (нет флага в localStorage)
+  var dismissed = false;
+  try { dismissed = localStorage.getItem('roboplatform_welcome_seen') === '1'; } catch(e) {}
+  if (!dismissed) {
+    screen.style.display = 'flex';
+    helpBtn.style.display = 'flex';
+  } else {
+    helpBtn.style.display = 'flex';
+  }
+
+  function hideWelcome(forever) {
+    screen.style.display = 'none';
+    if (forever) {
+      try { localStorage.setItem('roboplatform_welcome_seen', '1'); } catch(e) {}
+    }
+  }
+  if (btnStart) btnStart.addEventListener('click', function() { hideWelcome(false); });
+  if (btnSkip) btnSkip.addEventListener('click', function() { hideWelcome(true); });
+  if (helpBtn) helpBtn.addEventListener('click', function() {
+    screen.style.display = 'flex';
+  });
+}
+
 function init() {
   loadState();
+  setupWelcomeScreen();
 
   document.querySelectorAll('.step').forEach(function(el) {
     el.addEventListener('click', function() {
