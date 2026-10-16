@@ -785,7 +785,14 @@ function renderStep3(el) {
 
   var paramFields = [
     { key: 'area', label: 'Площадь объекта (м²)', min: 0, step: 100 },
+    { key: 'warehouseLength', label: 'Длина объекта (м)', min: 0, step: 5, hint: 'Геометрический размер для расчёта маршрутов' },
+    { key: 'warehouseWidth', label: 'Ширина объекта (м)', min: 0, step: 5, hint: 'Геометрический размер для расчёта маршрутов' },
+    { key: 'storageHeight', label: 'Высота хранения (м)', min: 0, step: 1 },
+    { key: 'storageLevels', label: 'Число уровней стеллажей', min: 1, step: 1, hint: '1 — один ярус, 5 — пятиярусный склад' },
     { key: 'operations', label: 'Объём операций в год', min: 0, step: 100 },
+    { key: 'peakLoadFactor', label: 'Коэфф. пиковой нагрузки', min: 1, max: 3, step: 0.1, hint: 'Соотношение пикового спроса к среднему, например 1.3' },
+    { key: 'skuCount', label: 'Количество SKU (товаров)', min: 1, step: 100, hint: 'Разнообразие номенклатуры: чем больше, тем сложнее автоматизация' },
+    { key: 'temperatureRegime', label: 'Темп. режим (°C)', min: -30, max: 30, step: 1, hint: 'Холодный склад — дороже (изоляция, обогрев роботов)' },
     { key: 'staff', label: 'Численность персонала', min: 0, step: 1 },
     { key: 'salary', label: 'Средняя зарплата (₽/мес.)', min: 0, step: 1000 },
     { key: 'shifts', label: 'Количество смен', min: 1, step: 1 },
