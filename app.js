@@ -2848,13 +2848,40 @@ function exportCalculation() {
 
   htmlContent += '</body></html>';
 
-  downloadFile('расчёт_роботизации.txt', textContent, 'text/plain');
-  setTimeout(function() { downloadFile('расчёт_роботизации.html', htmlContent, 'text/html'); }, 200);
-  showToast('Расчёт экспортирован (TXT + HTML)', 'success');
+  // Экспорт: основной = PDF, запасной = HTML
+  var sol = getCalculationSolution();
+  var exportPayload = {
+    params: Object.assign({}, state.customParams, {
+      industryName: indName,
+      objectTypeName: objTypeName,
+    }),
+    solution: sol,
+  };
+
+  fetch('/api/calculation/export/pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(exportPayload),
+  }).then(function(res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.blob();
+  }).then(function(blob) {
+    downloadFile('расчёт_роботизации.pdf', blob, 'application/pdf');
+    showToast('Расчёт экспортирован в PDF', 'success');
+  }).catch(function(err) {
+    // Fallback на HTML, если PDF не удалось
+    downloadFile('расчёт_роботизации.html', htmlContent, 'text/html');
+    showToast('PDF недоступен, экспортирован HTML. Причина: ' + err.message, 'warning');
+  });
+
+  // Старый текстовый формат оставлен как опция — скачать архивом
+  // (компактно, но не основной канал)
+  // downloadFile('расчёт_роботизации.txt', textContent, 'text/plain');
 }
 
 function downloadFile(filename, content, mimeType) {
-  var blob = new Blob([content], { type: mimeType });
+  // Если content уже Blob — оборачиваем как есть
+  var blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
