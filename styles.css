@@ -1517,6 +1517,17 @@ body {
   flex: 1 1 auto;
   min-height: 320px;
 }
+.sim-axis-label {
+  position: absolute;
+  bottom: 4px;
+  right: 12px;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+.sim-chart-wrap {
+  position: relative;
+}
 
 /* Скруббер для прокрутки истории */
 .sim-scrubber {

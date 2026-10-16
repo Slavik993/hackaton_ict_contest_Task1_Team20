@@ -2006,9 +2006,13 @@ function buildSimulatorPanelHtml(results) {
   // Адаптивная высота графика: компактная когда мало шагов, во всю ширину — когда много
   var snapLen = (state.sim && state.sim.snapshot && state.sim.snapshot.history) ? state.sim.snapshot.history.length : 0;
   var chartHeight = snapLen >= 30 ? 280 : (snapLen >= 12 ? 220 : 160);
-  // Адаптивная высота графика: используем 320 как «виртуальный» viewBox,
-  // а CSS растягивает SVG на весь wrap через preserveAspectRatio="none".
-  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div>';
+  // Адаптивная высота графика: фиксированный viewBox 800×360, текст и
+// линии не растягиваются (preserveAspectRatio="xMidYMid meet"). Внешний
+// .sim-chart-wrap через CSS растягивает SVG на всю высоту карточки.
+  html += '<div class="sim-chart-wrap">';
+  html += '<svg class="sim-chart" id="simChart" viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>';
+  html += '<div class="sim-axis-label">Шаг симуляции (месяцы) →</div>';
+  html += '</div>';
   // Скруббер для прокрутки истории + двойные стрелки
   html += '<div class="sim-scrubber" id="simScrubberBox">';
   html += '<button class="btn btn-sm sim-scrubber-btn" id="simScrubFirst" title="К началу">⏮</button>';
@@ -2477,8 +2481,8 @@ function drawSimulatorChart(history, baseline) {
   // Используем данные внутри окна для построения серий
   history = visible;
 
-  var W = 800, H = 320;
-  var padL = 50, padR = 16, padT = 18, padB = 28;
+  var W = 800, H = 360;
+  var padL = 60, padR = 16, padT = 36, padB = 44;  // больше отступы для подписей
   var cw = W - padL - padR;
   var ch = H - padT - padB;
 
@@ -2545,19 +2549,19 @@ function drawSimulatorChart(history, baseline) {
     var v = minV + (maxV - minV) * (t / ticks);
     var yy = y(v);
     tickHtml += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '" stroke="#e2e8f0" stroke-dasharray="2 4"/>';
-    tickHtml += '<text x="' + (padL - 6) + '" y="' + (yy + 4) + '" text-anchor="end" font-size="10" fill="#64748b">' + formatCompactCurrency(v) + '</text>';
+    tickHtml += '<text x="' + (padL - 8) + '" y="' + (yy + 4) + '" text-anchor="end" font-size="10" fill="#64748b">' + formatCompactCurrency(v) + '</text>';
   }
 
-  // X-axis ticks: month labels
+  // X-axis ticks: month labels — реже, чтобы не было пересечений
   var xTicksHtml = '';
   if (history && history.length) {
-    var tickCount = Math.min(8, history.length);
+    var tickCount = Math.min(6, history.length);  // меньше = больше воздуха
     for (var i = 0; i < tickCount; i++) {
       var stepIdx = Math.round((history.length - 1) * (i / Math.max(1, tickCount - 1)));
       var h = history[stepIdx];
       if (!h) continue;
       var xx = x(stepIdx);
-      xTicksHtml += '<text x="' + xx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#64748b">М' + h.stepIndex + '</text>';
+      xTicksHtml += '<text x="' + xx + '" y="' + (H - padB + 18) + '" text-anchor="middle" font-size="10" fill="#64748b">М' + h.stepIndex + '</text>';
     }
   }
 
@@ -2590,9 +2594,9 @@ function drawSimulatorChart(history, baseline) {
   html += '<path d="' + path(series.cashflow) + '" fill="none" stroke="#ef4444" stroke-width="2" stroke-linejoin="round"/>';
   html += '<path d="' + path(series.npv) + '" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linejoin="round" stroke-dasharray="2 2"/>';
 
-  // Axis labels
-  html += '<text x="' + padL + '" y="' + (padT - 4) + '" font-size="11" fill="#64748b">Экономика по месяцам (₽ за шаг)</text>';
-  html += '<text x="' + (W / 2) + '" y="' + (H - 16) + '" text-anchor="middle" font-size="10" fill="#94a3b8">Месяц симуляции</text>';
+  // Axis labels: «Месяц симуляции» выносим в HTML-блок под SVG, чтобы не
+// накладывался на метки и не масштабировался вместе с графиком
+  html += '<text x="' + padL + '" y="' + (padT + 12) + '" font-size="11" fill="#64748b" font-weight="600">Экономика по месяцам (₽ за шаг)</text>';
 
   svg.innerHTML = html;
 }
