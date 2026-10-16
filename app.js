@@ -1723,7 +1723,11 @@ function buildSimulatorPanelHtml(results) {
   html += '<div class="simulator-panel" id="simulatorPanel">';
   html += '<div class="sim-header">';
   html += '<h3 class="sim-title">🧪 Экономический симулятор</h3>';
-  html += '<p class="sim-subtitle">Пошаговая симуляция влияния роботизации на экономику объекта: ежемесячная динамика CAPEX, OPEX, экономии, ROI, NPV.</p>';
+  html += '<p class="sim-subtitle">Пошаговая симуляция влияния роботизации на экономику объекта: ежемесячная динамика CAPEX, OPEX, экономии, ROI, NPV, IRR. <strong>Результаты шагов обновляют итоговые экономические показатели на Шаге 3.</strong></p>';
+  html += '<div class="sim-impact-banner">';
+  html += '<div class="sim-impact-icon">∑</div>';
+  html += '<div><strong>Симуляция влияет на экономику.</strong> Каждый шаг пересчитывает денежный поток, амортизацию, стохастические шоки и дисконтированный NPV — итоговый ROI и срок окупаемости зависят от того, как пройдёт симуляция.</div>';
+  html += '</div>';
   html += '</div>';
 
   html += '<div class="sim-controls">';
@@ -1918,6 +1922,27 @@ async function apiSimulation(action, body) {
     throw new Error('API ' + res.status + ': ' + txt);
   }
   return res.json();
+}
+
+async function bootstrapSimulatorDemo() {
+  // Демо-режим: создать симуляцию и продвинуть её на 6 шагов,
+  // чтобы пользователь сразу увидел эффект на экономике
+  var req = buildSimulatorRequestBody();
+  if (req.error) return;
+  try {
+    var data = await apiSimulation('', req.payload);
+    if (!data || !data.simulation) return;
+    state.sim.id = data.simulation.id;
+    state.sim.snapshot = data.simulation;
+    // Сделать 6 первых шагов, чтобы было что показать
+    var resp = await apiSimulation('step', { id: state.sim.id, steps: 6 });
+    state.sim.snapshot = resp.simulation;
+    paintSimulatorStatus();
+    renderSimulatorFromSnapshot(state.sim.snapshot);
+    showToast('Симуляция запущена. Нажмите «Шаг» или «Старт» для подробной динамики.', 'info');
+  } catch (e) {
+    console.warn('Simulator bootstrap failed', e);
+  }
 }
 
 async function startSimulator() {
@@ -2254,8 +2279,14 @@ function renderStep4(el) {
   var indColor = ind ? ind.accent : '#4f7cff';
   var objType = ind ? ind.objectTypes.find(function(t) { return t.id === state.selectedObjectType; }) : null;
 
-  var html = '<h2 class="section-title">Визуализация объекта</h2>';
-  html += '<p class="section-desc">Имитация работы объекта &ldquo;' + escapeHTML(getObjectTypeName()) + '&rdquo; с роботами. Показатели обновляются по мере выполнения маршрутов.</p>';
+  var html = '<h2 class="section-title">Экономика и визуализация</h2>';
+  html += '<p class="section-desc">Имитация работы объекта &ldquo;' + escapeHTML(getObjectTypeName()) + '&rdquo; с роботами. <strong>Экономический симулятор ниже</strong> пересчитывает CAPEX, OPEX, экономию, NPV и срок окупаемости по месяцам — результаты влияют на итоговую экономику проекта.</p>';
+
+  // -----------------------------------------------------------------
+  // Экономический симулятор — влияет на экономику через месячные шаги
+  // Размещаем его ПЕРВЫМ на странице, чтобы он был сразу виден
+  // -----------------------------------------------------------------
+  html += buildSimulatorPanelHtml(results);
 
   html += '<div class="visualization-container">';
   html += '<div class="viz-controls">';
@@ -2389,18 +2420,9 @@ function renderStep4(el) {
   html += '<div class="viz-metric"><div class="viz-metric-label">Загрузка парка</div><div class="viz-metric-value" id="vizUtilization">0%</div></div>';
   html += '<div class="viz-metric"><div class="viz-metric-label">Энергия за смену</div><div class="viz-metric-value" id="vizEnergy">0 кВт·ч</div></div>';
   html += '<div class="viz-metric"><div class="viz-metric-label">Доступность</div><div class="viz-metric-value" id="vizUptime">0%</div></div>';
-  html += '<div class="viz-metric"><div class="viz-metric-label">CAPEX</div><div class="viz-metric-value">' + formatCurrency(results.capex) + '</div></div>';
-  html += '<div class="viz-metric"><div class="viz-metric-label">Годовой OPEX</div><div class="viz-metric-value">' + formatCurrency(results.opex) + '</div></div>';
-  html += '<div class="viz-metric"><div class="viz-metric-label">ROI за 3 года</div><div class="viz-metric-value">' + formatNum(results.roi3y, 1) + '%</div></div>';
-  html += '<div class="viz-metric"><div class="viz-metric-label">Снижение CO₂</div><div class="viz-metric-value">' + formatNum(results.co2, 1) + ' т/год</div></div>';
   html += '</div>';
 
   html += '</div>';
-
-  // -----------------------------------------------------------------
-  // Экономический симулятор — влияет на экономику через месячные шаги
-  // -----------------------------------------------------------------
-  html += buildSimulatorPanelHtml(results);
 
   el.innerHTML = html;
 
@@ -2411,6 +2433,24 @@ function renderStep4(el) {
     init3DVisualization();
   } else {
     startVizAnimation();
+  }
+
+  // Сделать симулятор заметным: подсветить панель, прокрутить к ней
+  // и автоматически запустить, если пользователь ещё не запускал
+  var simPanel = el.querySelector('#simulatorPanel');
+  if (simPanel) {
+    simPanel.classList.add('simulator-panel-highlight');
+    setTimeout(function() { simPanel.classList.remove('simulator-panel-highlight'); }, 4000);
+  }
+  // Если у пользователя ещё не было симуляции в этой сессии — автозапуск через 0.8с,
+  // чтобы он сразу увидел, что панель живая
+  if (state.sim && !state.sim.id && !state.sim._autoStarted) {
+    state.sim._autoStarted = true;
+    setTimeout(function() {
+      // автозапуск с фолбэком: создать симуляцию и сделать несколько шагов,
+      // не запуская таймер (пошаговый показ)
+      bootstrapSimulatorDemo();
+    }, 800);
   }
   // If a simulation already exists (user toggled 2D/3D or paused and came back),
   // re-paint the simulator panels using the cached snapshot.
