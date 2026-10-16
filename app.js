@@ -16,6 +16,19 @@ const state = {
   vizStats: null,
   vizMode: '2d',
   viz3D: null,
+  // Economic simulator state
+  sim: {
+    id: null,
+    running: false,
+    paused: true,
+    tickMs: 600,           // ms between simulated months
+    speed: 1,              // multiplier for tickMs
+    horizonYears: 5,
+    snapshot: null,
+    timerId: null,
+    seed: null,
+    overviewKey: 0,        // forces re-render of derived panels
+  },
 };
 
 function getObjTypes(industryId) {
@@ -154,6 +167,10 @@ function navigateToStep(n) {
   if (state.vizAnimFrame) {
     cancelAnimationFrame(state.vizAnimFrame);
     state.vizAnimFrame = null;
+  }
+  if (state.sim && state.sim.timerId) {
+    clearInterval(state.sim.timerId);
+    state.sim.timerId = null;
   }
   dispose3D();
   renderCurrentStep();
@@ -1678,6 +1695,552 @@ return {
   };
 }
 
+// ===========================================================================
+// Экономический симулятор
+// ===========================================================================
+//
+// Симулятор дополняет существующую 2D/3D-визуализацию: пользователь может
+// запустить пошаговую экономическую симуляцию (месяц за месяцем) и наблюдать,
+// как с течением времени меняются CAPEX, OPEX, экономия, ROI, NPV, денежный
+// поток и KPI. Состояние симуляции хранится на сервере (см.
+// server/services/simulation.js + server/routes/simulation.js). Клиентская
+// часть обновляет метрики и перерисовывает графики по мере поступления
+// снапшотов. Реализована полная панель управления: запуск/пауза, шаг вперёд,
+// сброс, скорость, горизонт, выбор сценария. Симуляция напрямую влияет на
+// отображаемые экономические показатели и сохраняет траекторию в истории.
+
+function buildSimulatorPanelHtml(results) {
+  var sim = state.sim || (state.sim = { snapshot: null });
+  var snap = sim.snapshot;
+  var horizonYears = sim.horizonYears || 5;
+  var horizonOptions = [3, 5, 7, 10];
+  var horizonOptionsHtml = horizonOptions.map(function(y) {
+    return '<option value="' + y + '"' + (y === horizonYears ? ' selected' : '') + '>' + y + ' лет</option>';
+  }).join('');
+  var model = sim.model || 'purchase';
+
+  var html = '';
+  html += '<div class="simulator-panel" id="simulatorPanel">';
+  html += '<div class="sim-header">';
+  html += '<h3 class="sim-title">🧪 Экономический симулятор</h3>';
+  html += '<p class="sim-subtitle">Пошаговая симуляция влияния роботизации на экономику объекта: ежемесячная динамика CAPEX, OPEX, экономии, ROI, NPV.</p>';
+  html += '</div>';
+
+  html += '<div class="sim-controls">';
+  html += '<div class="sim-control-group">';
+  html += '<label class="form-label">Сценарий</label>';
+  html += '<select class="form-input" id="simModel" style="min-width:130px">';
+  html += '<option value="purchase"' + (model === 'purchase' ? ' selected' : '') + '>Покупка</option>';
+  html += '<option value="raas"' + (model === 'raas' ? ' selected' : '') + '>RaaS</option>';
+  html += '<option value="loan"' + (model === 'loan' ? ' selected' : '') + '>Кредит</option>';
+  html += '</select>';
+  html += '</div>';
+
+  html += '<div class="sim-control-group">';
+  html += '<label class="form-label">Горизонт</label>';
+  html += '<select class="form-input" id="simHorizon" style="min-width:100px">' + horizonOptionsHtml + '</select>';
+  html += '</div>';
+
+  html += '<div class="sim-control-group">';
+  html += '<label class="form-label">Скорость <span id="simSpeedLabel" class="range-value">' + (sim.speed || 1).toFixed(1) + 'x</span></label>';
+  html += '<input type="range" class="range-input" id="simSpeed" min="0.5" max="5" step="0.5" value="' + (sim.speed || 1) + '" style="width:120px">';
+  html += '</div>';
+
+  html += '<div class="sim-control-group sim-actions">';
+  html += '<button class="btn btn-primary" id="simStart">▶ Запустить</button>';
+  html += '<button class="btn btn-secondary" id="simPause">⏸ Пауза</button>';
+  html += '<button class="btn btn-secondary" id="simStep">⏭ Шаг</button>';
+  html += '<button class="btn btn-danger" id="simReset">⟲ Сброс</button>';
+  html += '</div>';
+
+  html += '</div>';
+
+  html += '<div class="sim-statusbar" id="simStatusBar">';
+  html += '<span class="sim-pill sim-pill-idle" id="simStatusPill">Не запущено</span>';
+  html += '<span class="sim-status-text" id="simStatusText">Нажмите «Запустить», чтобы начать экономическую симуляцию.</span>';
+  html += '</div>';
+
+  html += '<div class="sim-layout">';
+
+  // ---- Chart ----
+  html += '<div class="sim-chart-card">';
+  html += '<div class="sim-chart-header">';
+  html += '<h4>Динамика экономики по месяцам</h4>';
+  html += '<div class="sim-legend">';
+  html += '<span class="sim-legend-item"><i style="background:#4f7cff"></i>CAPEX</span>';
+  html += '<span class="sim-legend-item"><i style="background:#22c55e"></i>OPEX</span>';
+  html += '<span class="sim-legend-item"><i style="background:#f59e0b"></i>Экономия</span>';
+  html += '<span class="sim-legend-item"><i style="background:#ef4444"></i>Денежный поток</span>';
+  html += '<span class="sim-legend-item"><i style="background:#8b5cf6"></i>NPV</span>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="sim-chart-wrap"><svg class="sim-chart" id="simChart" viewBox="0 0 800 320" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div>';
+  html += '</div>';
+
+  // ---- KPI column ----
+  html += '<div class="sim-kpi-card">';
+  html += '<h4>Ключевые показатели</h4>';
+  html += '<div class="sim-kpi" data-kpi="progress"><span class="sim-kpi-label">Шаг симуляции</span><span class="sim-kpi-value" id="simKpiProgress">0 / 0</span><div class="sim-progress"><div class="sim-progress-bar" id="simProgressBar"></div></div></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">CAPEX (выплачено)</span><span class="sim-kpi-value" id="simKpiCapex">' + formatCurrency(0) + '</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">OPEX (накопленный)</span><span class="sim-kpi-value" id="simKpiOpex">' + formatCurrency(0) + '</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">Экономия (накопленная)</span><span class="sim-kpi-value" id="simKpiSavings">' + formatCurrency(0) + '</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">Денежный поток</span><span class="sim-kpi-value" id="simKpiCashflow">' + formatCurrency(0) + '</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">NPV</span><span class="sim-kpi-value" id="simKpiNpv">' + formatCurrency(0) + '</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">ROI за горизонт</span><span class="sim-kpi-value" id="simKpiRoi">' + formatNum(0, 1) + '%</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">Срок окупаемости</span><span class="sim-kpi-value" id="simKpiPayback">—</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">CO₂ экономия</span><span class="sim-kpi-value" id="simKpiCo2">' + formatNum(0, 1) + ' т</span></div>';
+  html += '<div class="sim-kpi"><span class="sim-kpi-label">Шоки надёжности</span><span class="sim-kpi-value" id="simKpiShocks">0</span></div>';
+  html += '<div class="sim-kpi sim-kpi-empty">Сценарий: <strong id="simKpiScenario">' + (model === 'raas' ? 'RaaS' : (model === 'loan' ? 'Кредит' : 'Покупка')) + '</strong></div>';
+  html += '</div>';
+
+  html += '</div>';
+
+  html += '<div class="sim-baseline-row">';
+  html += '<div class="sim-baseline-card"><span class="sim-baseline-label">Базовая CAPEX (детерм.)</span><span class="sim-baseline-value">' + formatCurrency(results.capex) + '</span></div>';
+  html += '<div class="sim-baseline-card"><span class="sim-baseline-label">Базовый OPEX/год (детерм.)</span><span class="sim-baseline-value">' + formatCurrency(results.opex) + '</span></div>';
+  html += '<div class="sim-baseline-card"><span class="sim-baseline-label">Базовая экономия/год (детерм.)</span><span class="sim-baseline-value">' + formatCurrency(results.savings) + '</span></div>';
+  html += '<div class="sim-baseline-card"><span class="sim-baseline-label">Базовая окупаемость (детерм.)</span><span class="sim-baseline-value">' + (results.payback > 0 ? formatNum(results.payback, 1) + ' лет' : '—') + '</span></div>';
+  html += '<div class="sim-baseline-card"><span class="sim-baseline-label">Базовый ROI 3г (детерм.)</span><span class="sim-baseline-value">' + formatNum(results.roi3y, 1) + '%</span></div>';
+  html += '</div>';
+
+  html += '<div class="sim-table-wrap">';
+  html += '<h4>История шагов</h4>';
+  html += '<div class="sim-table-scroll"><table class="sim-table" id="simTable">';
+  html += '<thead><tr><th>Шаг</th><th>Год</th><th>Месяц</th><th>CAPEX</th><th>OPEX</th><th>Экономия</th><th>Поток</th><th>Накоп. поток</th><th>NPV</th><th>Загрузка</th><th>Шок</th></tr></thead>';
+  html += '<tbody id="simTableBody"><tr><td colspan="11" class="sim-empty">История пуста — запустите симуляцию.</td></tr></tbody>';
+  html += '</table></div>';
+  html += '</div>';
+
+  html += '</div>';
+
+  return html;
+}
+
+function setupSimulatorControls(el) {
+  var btnStart = el.querySelector('#simStart');
+  var btnPause = el.querySelector('#simPause');
+  var btnStep = el.querySelector('#simStep');
+  var btnReset = el.querySelector('#simReset');
+  var selHorizon = el.querySelector('#simHorizon');
+  var selModel = el.querySelector('#simModel');
+  var speedInput = el.querySelector('#simSpeed');
+  var speedLabel = el.querySelector('#simSpeedLabel');
+
+  if (selHorizon) {
+    selHorizon.addEventListener('change', function(e) {
+      state.sim.horizonYears = clamp(safeFloat(e.target.value, 5), 1, 30);
+      // Reset (recreate) simulation with new horizon
+      resetSimulatorWithConfig();
+    });
+  }
+  if (selModel) {
+    selModel.addEventListener('change', function(e) {
+      state.sim.model = e.target.value;
+      var label = document.getElementById('simKpiScenario');
+      if (label) {
+        label.textContent = state.sim.model === 'raas' ? 'RaaS' : (state.sim.model === 'loan' ? 'Кредит' : 'Покупка');
+      }
+      resetSimulatorWithConfig();
+    });
+  }
+  if (speedInput) {
+    speedInput.addEventListener('input', function(e) {
+      state.sim.speed = safeFloat(e.target.value, 1);
+      if (speedLabel) speedLabel.textContent = state.sim.speed.toFixed(1) + 'x';
+      // If running, restart timer with new speed
+      if (state.sim && state.sim.running) {
+        restartSimulatorTimer();
+      }
+    });
+  }
+
+  if (btnStart) {
+    btnStart.addEventListener('click', function() {
+      startSimulator();
+    });
+  }
+  if (btnPause) {
+    btnPause.addEventListener('click', function() {
+      pauseSimulator();
+    });
+  }
+  if (btnStep) {
+    btnStep.addEventListener('click', function() {
+      stepSimulator(1);
+    });
+  }
+  if (btnReset) {
+    btnReset.addEventListener('click', function() {
+      resetSimulatorWithConfig();
+    });
+  }
+}
+
+function getSimulatorSeed() {
+  if (!state.sim) return null;
+  if (state.sim.seed != null) return state.sim.seed;
+  state.sim.seed = Math.floor(Math.random() * 0xffffffff);
+  return state.sim.seed;
+}
+
+function buildSimulatorOverrides() {
+  return {
+    horizonYears: state.sim.horizonYears || 5,
+    stepMonths: 1,
+    randomSeed: getSimulatorSeed(),
+  };
+}
+
+function buildSimulatorRequestBody() {
+  var solution = state.selectedSolutions && state.selectedSolutions.length
+    ? state.selectedSolutions.find(function(s) { return s.id === state.calculationSolutionId; }) || state.selectedSolutions[0]
+    : null;
+  if (!solution) {
+    return { error: 'Выберите решение на шаге 2 для запуска симуляции.' };
+  }
+  var payload = {
+    params: Object.assign({}, state.customParams || {}),
+    solution: solution,
+    model: state.sim.model || 'purchase',
+    overrides: buildSimulatorOverrides(),
+  };
+  return { payload: payload };
+}
+
+async function apiSimulation(action, body) {
+  var res = await fetch('/api/simulation' + (action ? '/' + action : ''), {
+    method: action === 'step' || action === 'run' || action === undefined && body ? 'POST' : (body ? 'POST' : 'GET'),
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    var txt = await res.text();
+    throw new Error('API ' + res.status + ': ' + txt);
+  }
+  return res.json();
+}
+
+async function startSimulator() {
+  if (state.sim && state.sim.running && !state.sim.paused) return;
+  var req = buildSimulatorRequestBody();
+  if (req.error) {
+    showToast(req.error, 'error');
+    return;
+  }
+
+  // If no id, create a new simulation on the server first
+  if (!state.sim.id) {
+    try {
+      var data = await apiSimulation('', req.payload);
+      state.sim.id = data.simulation.id;
+      state.sim.snapshot = data.simulation;
+      paintSimulatorStatus();
+    } catch (e) {
+      showToast('Не удалось запустить симуляцию: ' + (e && e.message ? e.message : e), 'error');
+      return;
+    }
+  }
+
+  state.sim.running = true;
+  state.sim.paused = false;
+  paintSimulatorStatus();
+  restartSimulatorTimer();
+}
+
+function restartSimulatorTimer() {
+  if (state.sim && state.sim.timerId) {
+    clearInterval(state.sim.timerId);
+    state.sim.timerId = null;
+  }
+  if (!state.sim || !state.sim.running || state.sim.paused) return;
+  var tickMs = Math.max(120, (state.sim.tickMs || 600) / (state.sim.speed || 1));
+  state.sim.timerId = setInterval(function() {
+    stepSimulator(1);
+  }, tickMs);
+}
+
+function pauseSimulator() {
+  if (!state.sim) return;
+  state.sim.paused = true;
+  if (state.sim.timerId) {
+    clearInterval(state.sim.timerId);
+    state.sim.timerId = null;
+  }
+  paintSimulatorStatus();
+}
+
+async function stepSimulator(n) {
+  if (!state.sim || !state.sim.id) {
+    // First call without prior start: bootstrap a simulation, then step it once
+    var req = buildSimulatorRequestBody();
+    if (req.error) { showToast(req.error, 'error'); return; }
+    try {
+      var data = await apiSimulation('', req.payload);
+      state.sim.id = data.simulation.id;
+      state.sim.snapshot = data.simulation;
+    } catch (e) {
+      showToast('Не удалось запустить симуляцию: ' + (e && e.message ? e.message : e), 'error');
+      return;
+    }
+  }
+  try {
+    var resp = await apiSimulation('step', { id: state.sim.id, steps: n || 1 });
+    state.sim.snapshot = resp.simulation;
+    paintSimulatorStatus();
+    renderSimulatorFromSnapshot(state.sim.snapshot);
+    if (state.sim.snapshot && state.sim.snapshot.status === 'completed') {
+      pauseSimulator();
+      showToast('Симуляция завершена', 'success');
+    }
+  } catch (e) {
+    showToast('Ошибка шага: ' + (e && e.message ? e.message : e), 'error');
+  }
+}
+
+async function resetSimulatorWithConfig() {
+  pauseSimulator();
+  state.sim.id = null;
+  state.sim.snapshot = null;
+  paintSimulatorStatus();
+  renderSimulatorEmpty();
+}
+
+function renderSimulatorEmpty() {
+  var ids = ['simKpiProgress', 'simProgressBar', 'simKpiCapex', 'simKpiOpex', 'simKpiSavings', 'simKpiCashflow', 'simKpiNpv', 'simKpiRoi', 'simKpiPayback', 'simKpiCo2', 'simKpiShocks'];
+  ids.forEach(function(id) {
+    var e = document.getElementById(id);
+    if (!e) return;
+    if (id === 'simProgressBar') {
+      e.style.width = '0%';
+    } else if (id === 'simKpiProgress') {
+      e.textContent = '0 / 0';
+    } else if (id === 'simKpiPayback') {
+      e.textContent = '—';
+    } else if (id === 'simKpiShocks') {
+      e.textContent = '0';
+    } else {
+      e.textContent = formatCurrency(0);
+    }
+  });
+  drawSimulatorChart([], { baselineCapex: 0, baselineAnnualSavings: 0 });
+  var tbody = document.getElementById('simTableBody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="sim-empty">История пуста — запустите симуляцию.</td></tr>';
+}
+
+function paintSimulatorStatus() {
+  var pill = document.getElementById('simStatusPill');
+  var txt = document.getElementById('simStatusText');
+  if (!pill || !txt) return;
+  var snap = state.sim && state.sim.snapshot;
+  pill.classList.remove('sim-pill-idle', 'sim-pill-running', 'sim-pill-paused', 'sim-pill-completed');
+  if (!snap) {
+    pill.classList.add('sim-pill-idle');
+    pill.textContent = 'Не запущено';
+    txt.textContent = 'Нажмите «Запустить», чтобы начать экономическую симуляцию.';
+    return;
+  }
+  if (snap.status === 'completed') {
+    pill.classList.add('sim-pill-completed');
+    pill.textContent = 'Завершено';
+    txt.textContent = 'Симуляция завершена: ' + snap.history.length + ' шагов, точка окупаемости ' + (snap.summary && snap.summary.paybackYears ? snap.summary.paybackYears.toFixed(1) + ' лет' : 'не достигнута') + '.';
+    return;
+  }
+  if (state.sim.paused) {
+    pill.classList.add('sim-pill-paused');
+    pill.textContent = 'На паузе';
+    txt.textContent = 'Шаг ' + snap.currentStepIndex + ' / ' + snap.totalSteps + '. Возобновите, чтобы продолжить.';
+  } else {
+    pill.classList.add('sim-pill-running');
+    pill.textContent = 'Идёт симуляция';
+    txt.textContent = 'Шаг ' + snap.currentStepIndex + ' / ' + snap.totalSteps + '. Шаг = 1 месяц; скорость ' + (state.sim.speed || 1).toFixed(1) + 'x.';
+  }
+}
+
+function renderSimulatorFromSnapshot(snap) {
+  if (!snap) return renderSimulatorEmpty();
+  paintSimulatorStatus();
+
+  // Aggregate derived KPIs
+  var history = snap.history || [];
+  var totalCapex = 0, totalOpex = 0, totalSavings = 0, cumCashflow = -((snap.baseline && snap.baseline.totalCapex) || 0);
+  var shocks = 0;
+  history.forEach(function(h) {
+    totalCapex += h.capex;
+    totalOpex += h.opex;
+    totalSavings += h.savings;
+    cumCashflow = h.cumulativeCashFlow;
+    if (h.shockOccurred) shocks += 1;
+  });
+  var last = history[history.length - 1] || { netPresentValue: 0, cumulativeCashFlow: cumCashflow };
+  var paybackYears = snap.summary && snap.summary.paybackYears;
+  var roi = snap.summary && snap.summary.roi;
+  var co2 = snap.summary && snap.summary.accumulatedCO2;
+
+  function setText(id, val) {
+    var el = document.getElementById(id);
+    if (el != null) el.textContent = val;
+  }
+  setText('simKpiProgress', snap.currentStepIndex + ' / ' + snap.totalSteps);
+  var bar = document.getElementById('simProgressBar');
+  if (bar) bar.style.width = (snap.totalSteps > 0 ? (snap.currentStepIndex / snap.totalSteps) * 100 : 0).toFixed(1) + '%';
+  setText('simKpiCapex', formatCurrency(totalCapex));
+  setText('simKpiOpex', formatCurrency(totalOpex));
+  setText('simKpiSavings', formatCurrency(totalSavings));
+  setText('simKpiCashflow', formatCurrency(last.cumulativeCashFlow));
+  setText('simKpiNpv', formatCurrency(last.netPresentValue));
+  setText('simKpiRoi', formatNum(roi || 0, 1) + ' %');
+  setText('simKpiPayback', paybackYears != null ? formatNum(paybackYears, 1) + ' лет' : '—');
+  setText('simKpiCo2', formatNum(co2 || 0, 1) + ' т');
+  setText('simKpiShocks', String(shocks));
+
+  drawSimulatorChart(history, snap.baseline || {});
+  renderSimulatorTable(snap);
+}
+
+function renderSimulatorTable(snap) {
+  var tbody = document.getElementById('simTableBody');
+  if (!tbody) return;
+  var history = snap.history || [];
+  if (!history.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="sim-empty">История пуста — запустите симуляцию.</td></tr>';
+    return;
+  }
+  // Limit to most recent 200 entries for performance
+  var slice = history.slice(-200);
+  var rows = slice.map(function(h) {
+    var shockCell = h.shockOccurred
+      ? '<span class="sim-shock-marker" title="Внезапный скачок OPEX/CAPEX">⚠ +' + Math.round(h.shockDeltaCapex + h.shockDeltaOpex).toLocaleString('ru-RU') + ' ₽</span>'
+      : '—';
+    return '<tr' + (h.shockOccurred ? ' class="sim-row-shock"' : '') + '>' +
+      '<td>' + h.stepIndex + '</td>' +
+      '<td>' + h.year + '</td>' +
+      '<td>' + h.month + '</td>' +
+      '<td>' + formatCurrency(h.capex) + '</td>' +
+      '<td>' + formatCurrency(h.opex) + '</td>' +
+      '<td>' + formatCurrency(h.savings) + '</td>' +
+      '<td>' + formatCurrency(h.netCashFlow) + '</td>' +
+      '<td>' + formatCurrency(h.cumulativeCashFlow) + '</td>' +
+      '<td>' + formatCurrency(h.netPresentValue) + '</td>' +
+      '<td>' + formatNum(h.utilization, 1) + '%</td>' +
+      '<td>' + shockCell + '</td>' +
+      '</tr>';
+  });
+  tbody.innerHTML = rows.join('');
+}
+
+function drawSimulatorChart(history, baseline) {
+  var svg = document.getElementById('simChart');
+  if (!svg) return;
+
+  var W = 800, H = 320;
+  var padL = 50, padR = 16, padT = 18, padB = 28;
+  var cw = W - padL - padR;
+  var ch = H - padT - padB;
+
+  // Lines: capex, opex, savings, cashflow, npv
+  var series = {
+    capex: [], opex: [], savings: [], cashflow: [], npv: []
+  };
+  (history || []).forEach(function(h) {
+    series.capex.push(h.capex);
+    series.opex.push(h.opex);
+    series.savings.push(h.savings);
+    series.cashflow.push(h.netCashFlow);
+    series.npv.push(h.netPresentValue);
+  });
+
+  var allValues = []
+    .concat(series.capex, series.opex, series.savings, series.cashflow, series.npv)
+    .concat(series.npv.map(function(v){ return v; }))
+    .filter(function(v){ return Number.isFinite(v); });
+
+  var maxAbs = allValues.length ? Math.max.apply(null, allValues.map(Math.abs)) : 0;
+  var maxV = maxAbs > 0 ? maxAbs : 1;
+  var minV = -maxV;
+
+  var n = Math.max(2, series.capex.length || 1);
+
+  function x(idx) {
+    return padL + (cw * idx) / Math.max(1, n - 1);
+  }
+  function y(v) {
+    var half = (maxV - minV) / 2 || 1;
+    var t = (v - minV) / (maxV - minV || 1);
+    return padT + ch - t * ch;
+  }
+
+  function path(arr) {
+    if (!arr.length) return '';
+    return arr.map(function(v, i) { return (i === 0 ? 'M' : 'L') + x(i) + ',' + y(v); }).join(' ');
+  }
+
+  // Build y-axis ticks
+  var ticks = 4;
+  var tickHtml = '';
+  for (var t = 0; t <= ticks; t++) {
+    var v = minV + (maxV - minV) * (t / ticks);
+    var yy = y(v);
+    tickHtml += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy + '" stroke="#e2e8f0" stroke-dasharray="2 4"/>';
+    tickHtml += '<text x="' + (padL - 6) + '" y="' + (yy + 4) + '" text-anchor="end" font-size="10" fill="#64748b">' + formatCompactCurrency(v) + '</text>';
+  }
+
+  // X-axis ticks: month labels
+  var xTicksHtml = '';
+  if (history && history.length) {
+    var tickCount = Math.min(8, history.length);
+    for (var i = 0; i < tickCount; i++) {
+      var stepIdx = Math.round((history.length - 1) * (i / Math.max(1, tickCount - 1)));
+      var h = history[stepIdx];
+      if (!h) continue;
+      var xx = x(stepIdx);
+      xTicksHtml += '<text x="' + xx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#64748b">М' + h.stepIndex + '</text>';
+    }
+  }
+
+  // Build cashflow area (fill between cashflow line and zero line)
+  var zeroY = y(0);
+  var cashflowArea = '';
+  if (series.cashflow.length) {
+    cashflowArea = '<path d="' + path(series.cashflow) + ' L' + x(series.cashflow.length - 1) + ',' + zeroY + ' L' + x(0) + ',' + zeroY + ' Z" fill="#ef4444" fill-opacity="0.10"/>';
+  }
+
+  var html = '';
+  html += '<defs>';
+  html += '<linearGradient id="simCapexGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4f7cff" stop-opacity="0.35"/><stop offset="100%" stop-color="#4f7cff" stop-opacity="0"/></linearGradient>';
+  html += '</defs>';
+  html += '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#f8fafc"/>';
+  html += tickHtml;
+  html += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + zeroY + '" y2="' + zeroY + '" stroke="#cbd5e1" stroke-width="1"/>';
+  html += xTicksHtml;
+
+  // Areas
+  if (series.capex.length) {
+    html += '<path d="' + path(series.capex) + ' L' + x(series.capex.length - 1) + ',' + zeroY + ' L' + x(0) + ',' + zeroY + ' Z" fill="url(#simCapexGrad)"/>';
+  }
+
+  // Lines
+  html += '<path d="' + path(series.capex) + '" fill="none" stroke="#4f7cff" stroke-width="2" stroke-linejoin="round"/>';
+  html += '<path d="' + path(series.opex) + '" fill="none" stroke="#22c55e" stroke-width="2" stroke-linejoin="round" stroke-dasharray="4 2"/>';
+  html += '<path d="' + path(series.savings) + '" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linejoin="round"/>';
+  html += cashflowArea;
+  html += '<path d="' + path(series.cashflow) + '" fill="none" stroke="#ef4444" stroke-width="2" stroke-linejoin="round"/>';
+  html += '<path d="' + path(series.npv) + '" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linejoin="round" stroke-dasharray="2 2"/>';
+
+  // Axis labels
+  html += '<text x="' + padL + '" y="' + (padT - 4) + '" font-size="11" fill="#64748b">Экономика по месяцам (₽ за шаг)</text>';
+  html += '<text x="' + (W / 2) + '" y="' + (H - 16) + '" text-anchor="middle" font-size="10" fill="#94a3b8">Месяц симуляции</text>';
+
+  svg.innerHTML = html;
+}
+
+function formatCompactCurrency(v) {
+  var abs = Math.abs(v);
+  if (abs >= 1e9) return (v / 1e9).toFixed(1) + ' млрд';
+  if (abs >= 1e6) return (v / 1e6).toFixed(1) + ' млн';
+  if (abs >= 1e3) return (v / 1e3).toFixed(0) + ' тыс';
+  return Math.round(v).toString();
+}
+
 function renderStep4(el) {
   if (!state.selectedIndustry || !state.selectedObjectType) {
     el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">!</div><div class="empty-state-text">Сначала завершите шаги 1-3.</div><button class="btn btn-primary" id="btnGoBack4">Перейти к шагу 1</button></div>';
@@ -1834,14 +2397,25 @@ function renderStep4(el) {
 
   html += '</div>';
 
+  // -----------------------------------------------------------------
+  // Экономический симулятор — влияет на экономику через месячные шаги
+  // -----------------------------------------------------------------
+  html += buildSimulatorPanelHtml(results);
+
   el.innerHTML = html;
 
   setupVizControls(el);
+  setupSimulatorControls(el);
   dispose3D();
   if (state.vizMode === '3d') {
     init3DVisualization();
   } else {
     startVizAnimation();
+  }
+  // If a simulation already exists (user toggled 2D/3D or paused and came back),
+  // re-paint the simulator panels using the cached snapshot.
+  if (state.sim && state.sim.snapshot) {
+    renderSimulatorFromSnapshot(state.sim.snapshot);
   }
 }
 

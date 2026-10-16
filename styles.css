@@ -1324,3 +1324,270 @@ body {
     margin-bottom: 8px;
   }
 }
+
+/* ===========================================================================
+   Экономический симулятор
+   =========================================================================== */
+
+.simulator-panel {
+  margin-top: 28px;
+  padding: 22px 22px 26px;
+  background: var(--color-surface);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+}
+
+.sim-header { margin-bottom: 14px; }
+.sim-title {
+  margin: 0 0 6px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+.sim-subtitle {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.sim-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin-bottom: 14px;
+}
+.sim-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.sim-control-group .form-label {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sim-control-group select.form-input { width: auto; }
+.sim-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+@media (max-width: 720px) {
+  .sim-actions { margin-left: 0; }
+}
+
+.sim-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-surface-alt);
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  border: 1px solid var(--color-border);
+}
+.sim-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.sim-pill::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+}
+.sim-pill-idle       { background: #e2e8f0; color: #475569; }
+.sim-pill-idle::before { background: #94a3b8; }
+.sim-pill-running    { background: #dbeafe; color: #1d4ed8; }
+.sim-pill-running::before { background: #2563eb; animation: sim-pulse 1s ease-in-out infinite; }
+.sim-pill-paused     { background: #fef9c3; color: #854d0e; }
+.sim-pill-paused::before { background: #ca8a04; }
+.sim-pill-completed  { background: #dcfce7; color: #166534; }
+.sim-pill-completed::before { background: #16a34a; }
+@keyframes sim-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.sim-status-text {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+.sim-layout {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .sim-layout { grid-template-columns: 1fr; }
+}
+
+.sim-chart-card,
+.sim-kpi-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
+.sim-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sim-chart-header h4,
+.sim-kpi-card h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+.sim-legend {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+.sim-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.sim-legend-item i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.sim-chart-wrap {
+  background: #f8fafc;
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.sim-chart {
+  width: 100%;
+  height: 280px;
+  display: block;
+}
+
+.sim-kpi {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+  gap: 12px;
+}
+.sim-kpi-label { color: var(--color-text-secondary); font-weight: 500; }
+.sim-kpi-value {
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.sim-kpi-empty {
+  background: transparent;
+  border-style: dashed;
+  justify-content: space-between;
+}
+.sim-progress {
+  grid-column: 1 / -1;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.sim-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #4f7cff, #22c55e);
+  width: 0%;
+  transition: width 250ms ease;
+}
+
+.sim-baseline-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+.sim-baseline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.sim-baseline-label { color: var(--color-text-secondary); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.sim-baseline-value { color: var(--color-text); font-weight: 700; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+
+.sim-table-wrap {
+  margin-top: 22px;
+}
+.sim-table-wrap h4 {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: var(--color-text);
+}
+.sim-table-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.sim-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  background: var(--color-surface);
+}
+.sim-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-alt);
+  color: var(--color-text-secondary);
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sim-table tbody td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.sim-table tbody tr.sim-row-shock {
+  background: #fef2f2;
+}
+.sim-table tbody tr:hover { background: #f1f5f9; }
+.sim-empty {
+  text-align: center;
+  color: var(--color-text-secondary);
+  padding: 18px;
+}
+.sim-shock-marker {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-weight: 600;
+  font-size: 0.7rem;
+}

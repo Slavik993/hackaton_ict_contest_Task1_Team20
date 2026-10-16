@@ -31,6 +31,7 @@ app.use('/api/export', require('./server/routes/export'));
 app.use('/api/import', require('./server/routes/upload'));
 app.use('/api/recommendations', require('./server/routes/recommendations'));
 app.use('/api/videos', require('./server/routes/videos'));
+app.use('/api/simulation', require('./server/routes/simulation'));
 
 app.post('/api/upload', authenticate, (req, res) => {
   res.status(400).json({ error: 'Use /api/import/catalog for file uploads' });
