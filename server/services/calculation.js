@@ -224,6 +224,15 @@ function calcScenario(params, solution, scenarioType) {
   const avgSalaryAnnual = salary * 12;
   const annualLaborCost = staff * avgSalaryAnnual;
 
+  // Остаточный ручной труд и обслуживание старого оборудования — считаем
+  // заранее, чтобы использовать в totalAnnualOpex/IRR/NPV/TCO.
+  // laborReduction применяется после доменной коррекции ниже, поэтому
+  // сначала вычисляем долю, а остаточную стоимость пересчитываем после
+  // объявления equipmentCost.
+  let residualLaborShare = 1 - Math.max(0, Math.min(1, m.laborReduction || 0));
+  let residualLaborCost = 0;
+  let residualEquipmentCost = 0;
+
   const throughput = m.throughput || 0;
   const capexPerUnit = m.capexPerUnit || 0;
   const serviceCostPerMonth = m.serviceCostPerMonth || 0;
@@ -281,7 +290,12 @@ function calcScenario(params, solution, scenarioType) {
   const annualMaterials = equipmentCost * (p.materialRatio !== undefined ? p.materialRatio : defaults.materialRatio);
   const annualRepair = equipmentCost * (p.repairRatio !== undefined ? p.repairRatio : defaults.repairRatio) / p.depreciationYears;
   const annualManagement = equipmentCost * (p.managementRatio !== undefined ? p.managementRatio : defaults.managementRatio);
-  const totalAnnualOpex = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement;
+  // Вычислим остаточные затраты здесь, чтобы totalAnnualOpex их сразу включал.
+  residualLaborCost = annualLaborCost * residualLaborShare;
+  residualEquipmentCost = equipmentCost * 0.02; // 2% от CAPEX оборудования/год
+  // Полный OPEX с учётом остаточного ручного труда и обслуживания старого оборудования
+  const totalAnnualOpex = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement
+    + residualLaborCost + residualEquipmentCost;
 
   const depreciationPeriod = p.depreciationYears || defaults.depreciationYears;
   const amortizationMethod = p.amortizationMethod || defaults.amortizationMethod;
@@ -304,9 +318,19 @@ function calcScenario(params, solution, scenarioType) {
     });
   }
 
+  // Учитываем доменную коррекцию laborReduction (была изменена выше)
+  if (isMedicalDomain || isFarmDomain || isSecurityDomain) {
+    residualLaborShare = Math.max(0, 1 - laborReduction);
+  } else {
+    residualLaborShare = Math.max(0, 1 - laborReduction);
+  }
+
   const laborSavings = annualLaborCost * (laborReduction || 0);
   const productivityGainValue = annualLaborCost * (productivityLift || 0);
   const otherSavings = (p.otherSavings || 0);
+
+  // Эффективная годовая экономия: реально высвобожденный ФОТ + прирост
+  // производительности + прочие эффекты
   const annualSavings = laborSavings + productivityGainValue + otherSavings;
 
   const netAnnualEffect = annualSavings - totalAnnualOpex - annualDepreciation;
@@ -358,7 +382,9 @@ function calcScenario(params, solution, scenarioType) {
     const replacementCost = (year % depreciationPeriod === 0 && year <= p.robotReplacementYear * Math.ceil(horizon / p.robotReplacementYear))
       ? equipmentCost * 0.7
       : 0;
-    const yearlyOpex = totalAnnualOpex + replacementCost;
+    // Эскалация остаточного ФОТ на уровне зарплатной инфляции +3%/год
+    const residualLaborEscalated = residualLaborCost * Math.pow(1.05, year - 1);
+    const yearlyOpex = (totalAnnualOpex - residualLaborCost + residualLaborEscalated) + replacementCost;
     tco += yearlyOpex;
   }
 
@@ -410,6 +436,9 @@ function calcScenario(params, solution, scenarioType) {
     dpp: irrResult.dpp,
     throughputPerRobot: throughput,
     laborCostAnnual: annualLaborCost,
+    residualLaborCost,
+    residualEquipmentCost,
+    residualLaborShare,
     assumptions: {
       depreciationMethod: amortizationMethod,
       depreciationYears: depreciationPeriod,

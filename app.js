@@ -1153,11 +1153,17 @@ function calcScenarioLocal(params, solution) {
 
 var laborSavings = annualLaborCost * laborReduction;
   var productivityGain = annualLaborCost * productivityLift;
+  // Остаточный ручной труд, который продолжает выплачиваться после роботизации
+  var residualLaborShare = Math.max(0, 1 - laborReduction);
+  var residualLaborCost = annualLaborCost * residualLaborShare;
+  // Обслуживание старого оборудования, которое остаётся в OPEX
+  var residualEquipmentCost = equipmentCost * 0.02;
+  var totalAnnualOpexWithResidual = totalAnnualOpex + residualLaborCost + residualEquipmentCost;
   var annualSavings = laborSavings + productivityGain;
-  var netAnnualEffect = annualSavings - totalAnnualOpex;
-  var netWithDepreciation = annualSavings - totalAnnualOpex - annualDepreciation;
+  var netAnnualEffect = annualSavings - totalAnnualOpexWithResidual;
+  var netWithDepreciation = annualSavings - totalAnnualOpexWithResidual - annualDepreciation;
 
-  var annualNet = annualSavings - totalAnnualOpex;   // чистый денежный поток
+  var annualNet = annualSavings - totalAnnualOpexWithResidual;   // чистый денежный поток
 
   // Срок окупаемости (простой)
   var payback = 0;
@@ -1193,14 +1199,17 @@ var laborSavings = annualLaborCost * laborReduction;
 
   var npv = -totalCapex;
   for (var yi = 1; yi <= horizon; yi++) {
-    npv += (annualSavings - totalAnnualOpex) / Math.pow(1 + discountRate, yi);
+    var residualEscalated = residualLaborCost * Math.pow(1.05, yi - 1);
+    var opexThisYear = totalAnnualOpex + residualEscalated + residualEquipmentCost;
+    npv += (annualSavings - opexThisYear) / Math.pow(1 + discountRate, yi);
   }
   if (!isFinite(npv)) npv = 0;
 
   var tco = totalCapex;
   for (var tc = 1; tc <= horizon; tc++) {
+    var residualEscalatedTco = residualLaborCost * Math.pow(1.05, tc - 1);
     var replacement = (tc % depreciationYears === 0) ? equipmentCost * 0.7 : 0;
-    tco += totalAnnualOpex + replacement;
+    tco += totalAnnualOpex + residualEscalatedTco + residualEquipmentCost + replacement;
   }
 
 return {
