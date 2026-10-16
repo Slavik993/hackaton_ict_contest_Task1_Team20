@@ -16,9 +16,24 @@ router.post('/', (req, res) => {
   try {
     const result = calcAll(params, solution);
     const paybackClass = classifyPayback(result.purchaseScenario.payback);
+    // Сбор всех warnings реалистичности из всех сценариев
+    const allRealismWarnings = [];
+    ['baseScenario', 'purchaseScenario', 'raasScenario', 'loanScenario'].forEach(function(key) {
+      const sc = result[key];
+      if (sc && sc.realism && Array.isArray(sc.realism.warnings)) {
+        sc.realism.warnings.forEach(function(w) { allRealismWarnings.push(Object.assign({}, w, { scenario: key })); });
+      }
+    });
+    const minConfidence = ['baseScenario', 'purchaseScenario', 'raasScenario', 'loanScenario'].reduce(function(acc, key) {
+      const sc = result[key];
+      const c = sc && sc.realism && typeof sc.realism.confidenceScore === 'number' ? sc.realism.confidenceScore : 100;
+      return Math.min(acc, c);
+    }, 100);
     res.json({
       ...result,
       paybackClass,
+      realismWarnings: allRealismWarnings,
+      confidenceScore: minConfidence,
       sourceDataVersion: 'demo-dataset-v1',
       calculationDate: new Date().toISOString(),
     });

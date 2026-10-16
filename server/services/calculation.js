@@ -1,6 +1,7 @@
 'use strict';
 
 const { NPV: npvFn, IRR: irrFn, DPP: dppFn } = require('./finmath');
+const { checkScenarioRealism, calibrateSolutionMetrics, calibrateCapexPerUnit } = require('./realism');
 
 function computeProjectIRR(initialOutflow, annualNetCashFlow, horizonYears, terminalReplacements) {
   var flows = [];
@@ -164,7 +165,11 @@ function calcLoanScenario(params, solution, purchaseScenario) {
 
 function calcScenario(params, solution, scenarioType) {
   const p = { ...defaults, ...params };
-  const m = solution.metrics || {};
+  const _domain = String(p.objectType || p.industry || '').toLowerCase();
+  // Калибровка метрик решения для снижения погрешности: трудозатраты не
+  // могут быть устранены полностью, productivity не выше 45%.
+  const _calib = calibrateSolutionMetrics(solution, _domain);
+  const m = { ...(solution.metrics || {}), ..._calib };
 
   // Domain correction multipliers for labor/productivity effect.
   // Logistics/industrial solutions assume high repeatable throughput; in the
@@ -272,7 +277,9 @@ function calcScenario(params, solution, scenarioType) {
 
   robotCount = Math.ceil(robotCount / (availability * utilization) * infraAdjustment);
 
-  const equipmentCost = robotCount * capexPerUnit;
+  // Калибровка CAPEX для снижения погрешности скидками/надбавками за объём
+  const calibratedCapexPerUnit = calibrateCapexPerUnit(capexPerUnit, robotCount);
+  const equipmentCost = robotCount * calibratedCapexPerUnit;
   const infrastructureCost = equipmentCost * (p.infrastructureRatio !== undefined ? p.infrastructureRatio : defaults.infrastructureRatio);
   const softwareCost = equipmentCost * (p.softwareRatio !== undefined ? p.softwareRatio : defaults.softwareRatio);
   const integrationCost = equipmentCost * (p.integrationRatio !== undefined ? p.integrationRatio : defaults.integrationRatio);
@@ -367,6 +374,9 @@ function calcScenario(params, solution, scenarioType) {
     if (!isFinite(roi3y)) roi3y = 0;
   }
 
+  // Проверка реалистичности (sanity) — возвращает warnings и оценку достоверности
+  const realism = checkScenarioRealism({ robotCount: Math.ceil(robotCount), totalCapex: adjustedCapex, annualSavings, assumptions: { domain: isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general')))) } }, p);
+
   // Медицинский потолок: клиническая роботизация редко даёт 300%+
   if (isMedicalDomain) {
     roi = Math.min(roi, 160);
@@ -439,6 +449,7 @@ function calcScenario(params, solution, scenarioType) {
     residualLaborCost,
     residualEquipmentCost,
     residualLaborShare,
+    realism: { warnings: realism.warnings, confidenceScore: realism.confidenceScore },
     assumptions: {
       depreciationMethod: amortizationMethod,
       depreciationYears: depreciationPeriod,
