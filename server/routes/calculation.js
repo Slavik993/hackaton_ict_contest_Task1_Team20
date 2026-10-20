@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const { calcAll, calcScenario, calcBaseScenario, calcRaasScenario, calcLoanScenario, classifyPayback, defaults: calcDefaults } = require('../services/calculation');
 const { getDb } = require('../db');
 const { JWT_SECRET } = require('../../config');
@@ -93,6 +93,7 @@ router.post('/scenarios', (req, res) => {
         ...params,
         robotCount: purchase.robotCount,
         annualSavings: purchase.annualSavings,
+        raasBaseCapex: purchase.totalCapex,
       }, sol);
       const loan = calcLoanScenario({
         ...params,

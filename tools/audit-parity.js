@@ -49,11 +49,11 @@ function loadClientCalc() {
     code += appSrc.substring(i, k + 1) + '\n';
   }
   code += appSrc.substring(start, end);
-  vm.runInContext(code + '\nthis.__calc = calcScenarioLocal;', ctx);
-  return ctx.__calc;
+  vm.runInContext(code + '\nthis.__calc = calcScenarioLocal; this.__loan = calcLoanScenarioLocal; this.__raas = calcRaasScenarioLocal;', ctx);
+  return { calc: ctx.__calc, loan: ctx.__loan, raas: ctx.__raas };
 }
 
-const { calcScenario } = require('../server/services/calculation');
+const { calcScenario, calcLoanScenario, calcRaasScenario } = require('../server/services/calculation');
 
 const CASES = [
   {
@@ -114,7 +114,7 @@ const TOL = { capex: 0.02, opex: 0.02, savings: 0.02, netAnnual: 0.02, npv: 0.02
 for (const c of CASES) {
   console.log('\n=== ' + c.name + ' ===');
   const s = calcScenario(c.params, c.solution);
-  const cl = clientCalc(c.params, c.solution);
+  const cl = clientCalc.calc(c.params, c.solution);
   for (const f of FIELDS) {
     totalChecks++;
     const map = FIELD_MAP[f];
@@ -136,6 +136,34 @@ for (const c of CASES) {
       ' client=' + cv.toFixed(2).padStart(16) +
       ' diff=' + (diff * 100).toFixed(2) + '% (tol ' + (tol * 100) + '%)'
     );
+  }
+
+  // Сценарии «Кредит» и «RaaS» — тоже должны совпадать (UI vs PDF/API)
+  for (const [label, serverFn, clientFn] of [
+    ['Кредит', (p) => calcLoanScenario(p, c.solution, s), (p) => clientCalc.loan(p, c.solution, cl)],
+    ['RaaS', (p) => calcRaasScenario({ ...p, robotCount: s.robotCount, annualSavings: s.annualSavings, raasBaseCapex: s.totalCapex }, c.solution),
+      (p) => clientCalc.raas(p, c.solution, cl)],
+  ]) {
+    const sv = serverFn(c.params);
+    const cv = clientFn(c.params);
+    for (const [f, tol] of [['payback', 0.05], ['roi', 0.02], ['npv', 0.02], ['tco', 0.02], ['netAnnualEffect', 0.02]]) {
+      totalChecks++;
+      const a = sv[f], b = f === 'netAnnualEffect' ? cv.netAnnual : cv[f];
+      if (typeof a !== 'number' || typeof b !== 'number' || !isFinite(a) || !isFinite(b)) {
+        console.log('  SKIP ' + label + '.' + f + ' (non-finite)');
+        totalChecks--; totalFails++;
+        continue;
+      }
+      const diff = Math.abs(a - b) / Math.max(1, Math.abs(a));
+      const ok = diff <= tol;
+      if (!ok) totalFails++;
+      console.log(
+        (ok ? '  OK  ' : ' FAIL ') + (label + '.' + f).padEnd(16) +
+        ' server=' + a.toFixed(2).padStart(16) +
+        ' client=' + (f === 'netAnnualEffect' ? cv.netAnnual : cv[f]).toFixed(2).padStart(16) +
+        ' diff=' + (diff * 100).toFixed(2) + '% (tol ' + (tol * 100) + '%)'
+      );
+    }
   }
 }
 

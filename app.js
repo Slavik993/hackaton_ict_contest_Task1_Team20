@@ -1457,15 +1457,22 @@ function calcLoanScenarioLocal(params, solution, purchaseScenario) {
   var annualTotalCost = annualOpex + annualDebtService;
   var netAnnual = annualSavings - annualTotalCost;
 
-  var payback = 0;
-  if (annualSavings > 0 && downPayment > 0) {
-    payback = downPayment / (annualSavings - annualTotalCost);
-    if (!isFinite(payback) || payback < 0) payback = 0;
+  // Окупаемость кредитной модели: момент, когда накопленный поток
+  // (после обслуживания долга) покрывает первоначальный взнос — как на сервере
+  var payback = -1;
+  var cumulative = -downPayment;
+  for (var y = 1; y <= horizon; y++) {
+    cumulative += netAnnual;
+    if (cumulative >= 0 && payback === -1) {
+      payback = y - 1 + (downPayment - (y > 1 ? netAnnual * (y - 1) : 0)) / netAnnual;
+      if (payback < 1) payback = 1;
+    }
   }
 
+  // ROI по ТЗ: (накопленный эффект за горизонт − инвестиции) / инвестиции
   var roi = 0;
   if (downPayment > 0) {
-    roi = ((annualSavings * horizon - downPayment - annualDebtService * horizon) / downPayment) * 100;
+    roi = ((netAnnual * horizon - downPayment) / downPayment) * 100;
     if (!isFinite(roi)) roi = 0;
   }
 
@@ -1481,6 +1488,12 @@ function calcLoanScenarioLocal(params, solution, purchaseScenario) {
     tco += annualTotalCost;
   }
 
+  // IRR и DPP — ОБЩИЙ модуль (server == client)
+  var loanCashflows = [-downPayment];
+  for (var ly = 1; ly <= horizon; ly++) loanCashflows.push(netAnnual);
+  var irr = FinMath.IRR(loanCashflows);
+  var dpp = FinMath.DPP(loanCashflows, discountRate);
+
   return {
     model: 'loan',
     capex: downPayment,
@@ -1493,6 +1506,8 @@ function calcLoanScenarioLocal(params, solution, purchaseScenario) {
     roi: roi,
     npv: npv,
     tco: tco,
+    irr: irr,
+    dpp: dpp,
     robotCount: purchaseScenario.robotCount,
     loanDetails: {
       downPayment: downPayment,
@@ -1525,19 +1540,27 @@ function calcRaasScenarioLocal(params, solution, purchaseScenario) {
   var purchaseOptionPrice = safeFloat(p.raasPurchaseOption, 0);
 
   var months = contractYears * 12;
-  var monthlyPayment = (totalCapex / months) * (1 + monthlyRate);
-  var annualPayment = monthlyPayment * 12;
+  // База арендной модели — полный CAPEX решения (как на сервере)
+  var raasBase = purchaseScenario.capex || 0;
+  var monthlyPayment = (raasBase / months) * (1 + monthlyRate);
+  var totalPayments = monthlyPayment * months;
+  var annualPayment = totalPayments / contractYears;
   var netAnnual = annualSavings - annualPayment;
 
-  var payback = 0;
-  if (annualSavings > 0 && totalCapex > 0) {
-    payback = totalCapex / (annualSavings - annualPayment);
-    if (!isFinite(payback) || payback < 0) payback = 0;
+  // Окупаемость: момент, когда накопленный эффект покрывает опцию выкупа
+  var payback = -1;
+  var cumulative = -purchaseOptionPrice;
+  for (var y = 1; y <= horizon; y++) {
+    cumulative += netAnnual;
+    if (cumulative >= 0 && payback === -1) {
+      payback = y - 1 + (purchaseOptionPrice - (y > 1 ? netAnnual * (y - 1) : 0)) / netAnnual;
+      if (payback < 1) payback = 1;
+    }
   }
 
   var roi = 0;
-  if (totalCapex > 0) {
-    roi = ((annualSavings * horizon - monthlyPayment * 12 * horizon) / totalCapex) * 100;
+  if (totalPayments > 0) {
+    roi = ((annualSavings * horizon - totalPayments) / totalPayments) * 100;
     if (!isFinite(roi)) roi = 0;
   }
 
@@ -1548,10 +1571,13 @@ function calcRaasScenarioLocal(params, solution, purchaseScenario) {
   }
   if (!isFinite(npv)) npv = 0;
 
-  var tco = totalCapex;
-  for (var tc = 1; tc <= horizon; tc++) {
-    tco += annualPayment;
-  }
+  var tco = totalPayments + annualPayment * Math.max(0, horizon - contractYears);
+
+  // IRR и DPP — ОБЩИЙ модуль (server == client)
+  var raasCashflows = [-purchaseOptionPrice];
+  for (var ry = 1; ry <= horizon; ry++) raasCashflows.push(netAnnual);
+  var irr = FinMath.IRR(raasCashflows);
+  var dpp = FinMath.DPP(raasCashflows, discountRate);
 
   return {
     model: 'raas',
@@ -1564,6 +1590,8 @@ function calcRaasScenarioLocal(params, solution, purchaseScenario) {
     roi: roi,
     npv: npv,
     tco: tco,
+    irr: irr,
+    dpp: dpp,
     robotCount: purchaseScenario.robotCount,
     monthlyPayment: monthlyPayment,
     contractYears: contractYears,
@@ -1739,6 +1767,12 @@ var display;
   }
 
   html += '</tbody></table></div></div>';
+  // Пояснение по базе расчёта ROI: у кредитного сценария инвестиции — это
+  // собственный капитал (первоначальный взнос), поэтому ROI заметно выше.
+  html += '<div style="font-size:0.75rem;color:var(--color-text-secondary);margin-top:12px">ROI по формуле ТЗ: ' +
+    '(накопленный эффект за горизонт − инвестиции) / инвестиции. Для сценария «Кредит» инвестициями считается ' +
+    'первоначальный взнос, поэтому ROI там выше — это эффект кредитного плеча. ' +
+    'Для честного сравнения сценариев смотрите NPV и IRR.</div>';
   return html;
 }
 
@@ -1947,7 +1981,20 @@ function resultItem(label, baseScenario, purchase, raas, loan) {
   if (valKey === 'capex') {
     detail = 'Проектный CAPEX';
   } else if (baseline && primary && valKey !== 'payback' && valKey !== 'robotCount') {
-    detail = formatCurrency(baseValue) + ' → ' + formatCurrency(value);
+    // Подпись «было → стало» в единицах самой метрики (для процентов и лет —
+    // проценты и годы, а не рубли)
+    if (valKey === 'roi' || valKey === 'irr') {
+      detail = formatNum(baseValue * (valKey === 'irr' ? 100 : 1), 1) + ' % → ' +
+        formatNum(value * (valKey === 'irr' ? 100 : 1), 1) + ' %';
+    } else if (valKey === 'dpp') {
+      detail = (baseValue > 0 ? formatNum(baseValue, 1) + ' лет' : '—') + ' → ' +
+        (value > 0 ? formatNum(value, 1) + ' лет' : '—');
+    } else if (valKey === 'co2') {
+      detail = (baseValue > 0 ? formatNum(baseValue, 1) : 0) + ' т/год → ' +
+        (value > 0 ? formatNum(value, 1) : 0) + ' т/год';
+    } else {
+      detail = formatCurrency(baseValue) + ' → ' + formatCurrency(value);
+    }
   }
 
   return '<div class="result-item"><div class="result-label">' + label + '</div><div class="result-value ' + cls + '">' + display + '</div><div class="result-detail">' + detail + '</div></div>';

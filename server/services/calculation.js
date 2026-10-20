@@ -531,7 +531,10 @@ function calcRaasScenario(params, solution) {
   const months = contractYears * 12;
 
   const robotCount = p.robotCount || 1;
-  const equipmentValue = robotCount * (m.capexPerUnit || 0);
+  // База арендной модели — полный CAPEX решения (оборудование + инфраструктура +
+  // ПО + интеграция + обучение). Иначе аренда обходилась бы заметно дешевле
+  // покупки и сравнение сценариев было бы нечестным.
+  const equipmentValue = p.raasBaseCapex || (robotCount * (m.capexPerUnit || 0));
 
   let totalPayments = 0;
   let capexPayments = 0;
@@ -619,6 +622,7 @@ function sensitivityAnalysis(params, solution, baseMetric) {
         ...modifiedParams,
         robotCount: purchase.robotCount,
         annualSavings: purchase.annualSavings,
+        raasBaseCapex: purchase.totalCapex,
       }, modifiedSolution);
       const loan = calcLoanScenario(modifiedParams, modifiedSolution, purchase);
 
@@ -649,6 +653,7 @@ function calcAll(params, solution) {
     ...domainParams,
     robotCount: purchaseScenario.robotCount,
     annualSavings: purchaseScenario.annualSavings,
+    raasBaseCapex: purchaseScenario.totalCapex,
   }, solution);
   const loanScenario = calcLoanScenario(domainParams, solution, purchaseScenario);
 
