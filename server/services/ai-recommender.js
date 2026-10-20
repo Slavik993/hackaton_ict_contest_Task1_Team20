@@ -1,5 +1,6 @@
 const { getDb } = require('../db');
 const { calcScenario } = require('./calculation');
+const { estimateServiceCostPerMonth } = require('../../shared/calc-core');
 
 function buildSolutionFeatures(solution) {
   const m = solution.metrics || {};
@@ -120,7 +121,9 @@ function dbRowToSolution(row) {
     powerKw: row.power_kw,
     implementation: row.implementation_months,
     capexPerUnit: row.price,
-    serviceCostPerMonth: 0,
+    // В каталоге ФЦ БАС стоимость обслуживания не указана — приводим её к
+    // отраслевому ориентиру (2,5% CAPEX/год), как в клиентском каталоге.
+    serviceCostPerMonth: estimateServiceCostPerMonth(row.price),
   };
 
   return {

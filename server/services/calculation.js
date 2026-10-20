@@ -1,23 +1,13 @@
-'use strict';
+﻿'use strict';
 
-const { NPV: npvFn, IRR: irrFn, DPP: dppFn } = require('./finmath');
-const { checkScenarioRealism, calibrateSolutionMetrics, calibrateCapexPerUnit } = require('./realism');
+const { NPV: npvFn, IRR: irrFn, DPP: dppFn, projectCashflows } = require('./finmath');
+const {
+  checkScenarioRealism, calibrateSolutionMetrics, calibrateCapexPerUnit,
+  detectDomain, applyDomainCorrection, requiredRobotsForLaborEffect, computeLaborEffect,
+} = require('./realism');
 
 function computeProjectIRR(initialOutflow, annualNetCashFlow, horizonYears, terminalReplacements) {
-  var flows = [];
-  var initial = Array.isArray(initialOutflow)
-    ? initialOutflow.reduce(function (a, b) { return a + b; }, 0)
-    : (initialOutflow || 0);
-  flows.push(-initial);
-  for (var y = 1; y <= horizonYears; y++) {
-    var cf = annualNetCashFlow || 0;
-    if (Array.isArray(terminalReplacements)) {
-      terminalReplacements.forEach(function (r) {
-        if (r && r.year === y) cf -= (r.amount || 0);
-      });
-    }
-    flows.push(cf);
-  }
+  var flows = projectCashflows(initialOutflow, annualNetCashFlow, horizonYears, terminalReplacements);
   var rate = irrFn(flows);
   var dpp = dppFn(flows, defaults.discountRate);
   return { irr: rate, dpp: dpp };
@@ -107,6 +97,7 @@ function calcLoanScenario(params, solution, purchaseScenario) {
     cumulative += netAnnual;
     if (cumulative >= 0 && payback === Infinity) {
       payback = y - 1 + (capexComponent.downPayment / netAnnual);
+      if (payback < 1) payback = 1;
     }
   }
 
@@ -116,8 +107,10 @@ function calcLoanScenario(params, solution, purchaseScenario) {
     npv += netAnnual / Math.pow(1 + dr, y);
   }
 
+  // ROI по ТЗ: (накопленный эффект за горизонт − инвестиции) / инвестиции.
+  // В накопленный эффект входит и OPEX (он уже вычтен в netAnnual).
   const roi = capexComponent.downPayment > 0
-    ? ((annualSavings * horizon - capexComponent.downPayment - annualDebtService * horizon) / capexComponent.downPayment) * 100
+    ? ((netAnnual * horizon - capexComponent.downPayment) / capexComponent.downPayment) * 100
     : 0;
 
   let tco = capexComponent.downPayment;
@@ -165,28 +158,36 @@ function calcLoanScenario(params, solution, purchaseScenario) {
 
 function calcScenario(params, solution, scenarioType) {
   const p = { ...defaults, ...params };
-  const _domain = String(p.objectType || p.industry || '').toLowerCase();
-  // Калибровка метрик решения для снижения погрешности: трудозатраты не
-  // могут быть устранены полностью, productivity не выше 45%.
-  const _calib = calibrateSolutionMetrics(solution, _domain);
-  const m = { ...(solution.metrics || {}), ..._calib };
 
-  // Domain correction multipliers for labor/productivity effect.
-  // Logistics/industrial solutions assume high repeatable throughput; in the
-  // social/medical sector clinical workflows are safety-critical and non-repeatable,
-  // so the achievable labor reduction is much lower (payback 3-7 years, not 3).
+  // Определение домена — из ОБЩЕГО модуля (совпадает с браузерным)
+  const domain = detectDomain(p);
+
+  // 1) Доменная коррекция заявленных метрик решения: клинические, сельско-
+  //    хозяйственные, строительные, энергетические и охранные процессы
+  //    не повторяемы в полной мере, поэтому фактический эффект ниже заявленного.
+  //    ВАЖНО: коррекция применяется ДО абсолютного потолка калибровки, иначе
+  //    медицина получает двойной штраф (0,6 × 0,25 = 0,15 и ещё × 0,25 = 0,037).
+  const rawMetrics = solution.metrics || {};
+  const corrected = applyDomainCorrection(
+    rawMetrics.laborReduction || 0,
+    rawMetrics.productivityLift || 0,
+    domain
+  );
+  // 2) Калибровка: трудозатраты не могут быть устранены полностью,
+  //    производительность выше 45% — только в идеализированных моделях.
+  const m = { ...rawMetrics, ...calibrateSolutionMetrics(corrected, domain) };
+
+  const laborReduction = m.laborReduction || 0;
+  const productivityLift = m.productivityLift || 0;
+
   const objType = String(p.objectType || p.objectTypeName || p.object_type || '').toLowerCase();
   const industry = String(p.industry || p.industryId || p.industryName || '').toLowerCase();
 
-  const isMedicalDomain =
-    objType.includes('мед') || objType.includes('medical') || objType.includes('больниц') ||
-    objType.includes('реабил') || objType.includes('клиник') || objType.includes('hospital') ||
-    industry.includes('социал') || industry.includes('мед') || industry.includes('zdрав') ||
-    industry === 'social' || objType === 'medical';
-  const isFarmDomain = objType.includes('ферм') || objType.includes('farm') || industry.includes('сельск') || industry === 'agriculture';
-  const isConstructionDomain = objType.includes('строитель') || objType.includes('construction') || industry.includes('строитель') || industry === 'construction';
-  const isEnergyDomain = objType.includes('энерг') || objType.includes('energy') || industry.includes('тэк') || industry.includes('энерг') || industry === 'energy';
-  const isSecurityDomain = objType.includes('охран') || objType.includes('security') || industry.includes('безопасн') || industry === 'security';
+  const isMedicalDomain = domain.isMedical;
+  const isFarmDomain = domain.isFarm;
+  const isConstructionDomain = domain.isConstruction;
+  const isEnergyDomain = domain.isEnergy;
+  const isSecurityDomain = domain.isSecurity;
 
   // Медицинские дефолты (Таблица 1: окупаемость 3–7 лет)
   if (isMedicalDomain) {
@@ -201,24 +202,6 @@ function calcScenario(params, solution, scenarioType) {
     if (p.robotAvailability === undefined || p.robotAvailability === defaults.robotAvailability) p.robotAvailability = md.robotAvailability;
   }
 
-  let laborReduction = m.laborReduction || 0;
-  let productivityLift = m.productivityLift || 0;
-
-  // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
-  // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
-  if (isMedicalDomain) {
-    laborReduction *= 0.25;      // сильно режем (было 0.6 / 0.35)
-    productivityLift *= 0.20;
-  } else if (isFarmDomain) {
-    laborReduction *= 0.85; productivityLift *= 0.8;
-  } else if (isConstructionDomain) {
-    laborReduction *= 0.9; productivityLift *= 0.85;
-  } else if (isEnergyDomain) {
-    laborReduction *= 0.9; productivityLift *= 0.85;
-  } else if (isSecurityDomain) {
-    laborReduction *= 0.85; productivityLift *= 0.8;
-  }
-
   const operations = p.operations || 0;
   const workingDays = p.workingDays || 250;
   const shifts = p.shifts || 1;
@@ -228,15 +211,6 @@ function calcScenario(params, solution, scenarioType) {
   const electricityRate = p.electricity || 10;
   const avgSalaryAnnual = salary * 12;
   const annualLaborCost = staff * avgSalaryAnnual;
-
-  // Остаточный ручной труд и обслуживание старого оборудования — считаем
-  // заранее, чтобы использовать в totalAnnualOpex/IRR/NPV/TCO.
-  // laborReduction применяется после доменной коррекции ниже, поэтому
-  // сначала вычисляем долю, а остаточную стоимость пересчитываем после
-  // объявления equipmentCost.
-  let residualLaborShare = 1 - Math.max(0, Math.min(1, m.laborReduction || 0));
-  let residualLaborCost = 0;
-  let residualEquipmentCost = 0;
 
   const throughput = m.throughput || 0;
   const capexPerUnit = m.capexPerUnit || 0;
@@ -277,6 +251,25 @@ function calcScenario(params, solution, scenarioType) {
 
   robotCount = Math.ceil(robotCount / (availability * utilization) * infraAdjustment);
 
+  // Размер парка под заявленный эффект по ФОТ.
+  // Заявление вендора («−35% трудозатрат») относится к развёртыванию, где
+  // парк покрывает нужное число операторов. Если считать только парк по
+  // производительности, экономия оказывается не связанной с роботами
+  // (2 робота «экономили» 45 млн ₽/год) — это и было причиной абсурдных IRR.
+  const laborFleet = requiredRobotsForLaborEffect(staff, laborReduction);
+  if (laborFleet > robotCount) robotCount = laborFleet;
+
+  // Эффект по ФОТ с учётом реального парка — ОБЩАЯ функция (server == client)
+  const laborEffect = computeLaborEffect({
+    laborReduction: laborReduction,
+    productivityLift: productivityLift,
+    robotCount: robotCount,
+    staff: staff,
+    annualLaborCost: annualLaborCost,
+  });
+  const residualLaborShare = laborEffect.residualLaborShare;
+  const residualLaborCost = laborEffect.residualLaborCost;
+
   // Калибровка CAPEX для снижения погрешности скидками/надбавками за объём
   const calibratedCapexPerUnit = calibrateCapexPerUnit(capexPerUnit, robotCount);
   const equipmentCost = robotCount * calibratedCapexPerUnit;
@@ -297,12 +290,14 @@ function calcScenario(params, solution, scenarioType) {
   const annualMaterials = equipmentCost * (p.materialRatio !== undefined ? p.materialRatio : defaults.materialRatio);
   const annualRepair = equipmentCost * (p.repairRatio !== undefined ? p.repairRatio : defaults.repairRatio) / p.depreciationYears;
   const annualManagement = equipmentCost * (p.managementRatio !== undefined ? p.managementRatio : defaults.managementRatio);
-  // Вычислим остаточные затраты здесь, чтобы totalAnnualOpex их сразу включал.
-  residualLaborCost = annualLaborCost * residualLaborShare;
-  residualEquipmentCost = equipmentCost * 0.02; // 2% от CAPEX оборудования/год
-  // Полный OPEX с учётом остаточного ручного труда и обслуживания старого оборудования
-  const totalAnnualOpex = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement
-    + residualLaborCost + residualEquipmentCost;
+  // Обслуживание оборудования, остающегося в эксплуатации (2% CAPEX/год)
+  const residualEquipmentCost = equipmentCost * 0.02;
+  // OPEX по ТЗ: сервис + лицензии + электроэнергия + материалы + ремонт + управление
+  // (+ обслуживание остаточного оборудования). Остаточный ручной труд в OPEX
+  // НЕ вычитается: экономия ФОТ уже измеряется относительно базового
+  // сценария «без роботизации», поэтому повторный вычет давал двойной счёт.
+  const robotOpexOnly = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement;
+  const totalAnnualOpex = robotOpexOnly + residualEquipmentCost;
 
   const depreciationPeriod = p.depreciationYears || defaults.depreciationYears;
   const amortizationMethod = p.amortizationMethod || defaults.amortizationMethod;
@@ -325,86 +320,95 @@ function calcScenario(params, solution, scenarioType) {
     });
   }
 
-  // Учитываем доменную коррекцию laborReduction (была изменена выше)
-  if (isMedicalDomain || isFarmDomain || isSecurityDomain) {
-    residualLaborShare = Math.max(0, 1 - laborReduction);
-  } else {
-    residualLaborShare = Math.max(0, 1 - laborReduction);
-  }
-
-  const laborSavings = annualLaborCost * (laborReduction || 0);
-  const productivityGainValue = annualLaborCost * (productivityLift || 0);
+  // Эффект по ФОТ — уже посчитан в laborEffect (с привязкой к парку роботов)
+  const laborSavings = laborEffect.laborSavings;
+  const productivityGainValue = laborEffect.productivityGain;
   const otherSavings = (p.otherSavings || 0);
 
   // Эффективная годовая экономия: реально высвобожденный ФОТ + прирост
   // производительности + прочие эффекты
   const annualSavings = laborSavings + productivityGainValue + otherSavings;
 
-  const netAnnualEffect = annualSavings - totalAnnualOpex - annualDepreciation;
+  // Денежный поток проекта: экономия (относительно базового сценария) − OPEX.
+  // Остаточный ручной труд здесь НЕ вычитается — он уже учтён в экономии.
+  const netCashAnnual = annualSavings - totalAnnualOpex;
+  // Чистый годовой эффект с амортизацией (бухгалтерский результат)
+  const netAnnualEffect = netCashAnnual - annualDepreciation;
 
   const discountRate = p.discountRate !== undefined ? p.discountRate : defaults.discountRate;
 
-  let payback = Infinity;
-  let cumulativeCashFlow = -adjustedCapex;
-  for (let year = 1; year <= horizon; year++) {
-    const annualNet = annualSavings - totalAnnualOpex;
-    cumulativeCashFlow += annualNet;
-    if (cumulativeCashFlow >= 0 && payback === Infinity) {
-      payback = year - 1 + (adjustedCapex - (year > 1 ? (annualSavings - totalAnnualOpex) * (year - 1) : 0)) / annualNet;
-      if (payback < 1) payback = 1;
-    }
+  // Срок окупаемости по ТЗ: CAPEX / (экономия − OPEX).
+  // Значение не ограничено горизонтом: если проект окупается позже горизонта,
+  // это показывается отдельным флагом paybackWithinHorizon.
+  let payback = -1;
+  if (netCashAnnual > 0 && adjustedCapex > 0) {
+    payback = adjustedCapex / netCashAnnual;
+    if (!isFinite(payback) || payback < 0) payback = -1;
+    if (payback > 0 && payback < 1) payback = 1;
   }
+  const paybackWithinHorizon = payback > 0 && payback <= horizon;
 
+  // NPV: дисконтированный поток в постоянных ценах (инфляция учитывается
+  // в симуляторе, поэтому здесь потоки уровневые — иначе двойной учёт).
   let npv = -adjustedCapex;
   for (let year = 1; year <= horizon; year++) {
-    const freeCashFlow = annualSavings - totalAnnualOpex;
+    const freeCashFlow = netCashAnnual;
     npv += freeCashFlow / Math.pow(1 + discountRate, year);
   }
 
   let roi = 0;
   let roi3y = 0;
   if (adjustedCapex > 0) {
-    const annualNet = annualSavings - totalAnnualOpex;
-    const cumulativeEffect = annualNet * horizon;
+    const cumulativeEffect = netCashAnnual * horizon;
     // Формула по ТЗ: ROI = (накопленный эффект за горизонт - инвестиции) / инвестиции × 100%
     roi = ((cumulativeEffect - adjustedCapex) / adjustedCapex) * 100;        // ROI на полном горизонте
-    const cumulativeNet3 = annualNet * Math.min(3, horizon);
+    const cumulativeNet3 = netCashAnnual * Math.min(3, horizon);
     roi3y = ((cumulativeNet3 - adjustedCapex) / adjustedCapex) * 100;        // ROI за 3 года (для UI)
     if (!isFinite(roi)) roi = 0;
     if (!isFinite(roi3y)) roi3y = 0;
   }
 
   // Проверка реалистичности (sanity) — возвращает warnings и оценку достоверности
-  const realism = checkScenarioRealism({ robotCount: Math.ceil(robotCount), totalCapex: adjustedCapex, annualSavings, assumptions: { domain: isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general')))) } }, p);
+  const realism = checkScenarioRealism({
+    robotCount: Math.ceil(robotCount),
+    totalCapex: adjustedCapex,
+    annualSavings,
+    laborLimitedByFleet: laborEffect.limitedByFleet,
+    requiredRobotCount: laborEffect.requiredRobotCount,
+    requestedLaborReduction: laborEffect.requestedLaborReduction,
+    payback: isFinite(payback) ? payback : -1,
+    assumptions: { domain: isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general')))) },
+  }, p);
 
   // Медицинский потолок: клиническая роботизация редко даёт 300%+
   if (isMedicalDomain) {
     roi = Math.min(roi, 160);
     roi3y = Math.min(roi3y, 90);
-    // Защита от «мгновенной» окупаемости (< 2.5 лет) при чрезмерной экономии
-    if (payback > 0 && payback < 2.5) payback = 2.5;
     // Нижняя граница: клиническая роботизация редко окупается быстрее 3 лет
     if (payback > 0 && payback < 3.0) payback = 3.0;
   }
 
+  // Замена оборудования — по окончании срока амортизации (кратно сроку
+  // амортизации). Если горизонт совпадает со сроком службы оборудования,
+  // замена за пределами периода не учитывается.
+  const replacementYears = [];
+  for (let y = depreciationPeriod; y < horizon; y += depreciationPeriod) {
+    replacementYears.push(y);
+  }
+  const replacementCost = equipmentCost * 0.7;
+
+  // TCO по ТЗ: CAPEX + сумма OPEX за горизонт с учётом замены компонентов
   let tco = adjustedCapex;
   for (let year = 1; year <= horizon; year++) {
-    const replacementCost = (year % depreciationPeriod === 0 && year <= p.robotReplacementYear * Math.ceil(horizon / p.robotReplacementYear))
-      ? equipmentCost * 0.7
-      : 0;
-    // Эскалация остаточного ФОТ на уровне зарплатной инфляции +3%/год
-    const residualLaborEscalated = residualLaborCost * Math.pow(1.05, year - 1);
-    const yearlyOpex = (totalAnnualOpex - residualLaborCost + residualLaborEscalated) + replacementCost;
-    tco += yearlyOpex;
+    const replacement = replacementYears.indexOf(year) !== -1 ? replacementCost : 0;
+    tco += totalAnnualOpex + replacement;
   }
 
   const co2Reduction = (p.co2ReductionFactor || 0) * robotCount;
 
   // IRR + Discounted Payback Period
-  const replacements = (p.robotReplacementYear && horizon > p.robotReplacementYear)
-    ? [{ year: p.robotReplacementYear, amount: equipmentCost * 0.7 }]
-    : [];
-  const irrResult = computeProjectIRR(adjustedCapex, annualSavings - totalAnnualOpex, horizon, replacements);
+  const replacements = replacementYears.map((y) => ({ year: y, amount: replacementCost }));
+  const irrResult = computeProjectIRR(adjustedCapex, netCashAnnual, horizon, replacements);
 
   return {
     robotCount: Math.ceil(robotCount),
@@ -427,6 +431,7 @@ function calcScenario(params, solution, scenarioType) {
     annualRepair,
     annualManagement,
     totalAnnualOpex,
+    opexRobotsOnly: robotOpexOnly,
     annualDepreciation,
     depreciationSchedule,
     laborSavings,
@@ -434,7 +439,9 @@ function calcScenario(params, solution, scenarioType) {
     otherSavings,
     annualSavings,
     netAnnualEffect,
+    netCashAnnual,
     payback: isFinite(payback) ? payback : -1,
+    paybackWithinHorizon,
     npv,
     roi,
     roi3y,
@@ -449,6 +456,13 @@ function calcScenario(params, solution, scenarioType) {
     residualLaborCost,
     residualEquipmentCost,
     residualLaborShare,
+    // Привязка эффекта к парку роботов
+    effectiveLaborReduction: laborEffect.effectiveLaborReduction,
+    effectiveProductivityLift: laborEffect.effectiveProductivityLift,
+    requestedLaborReduction: laborEffect.requestedLaborReduction,
+    requiredRobotCount: laborEffect.requiredRobotCount,
+    deploymentShare: laborEffect.deploymentShare,
+    laborLimitedByFleet: laborEffect.limitedByFleet,
     realism: { warnings: realism.warnings, confidenceScore: realism.confidenceScore },
     assumptions: {
       depreciationMethod: amortizationMethod,
@@ -531,11 +545,12 @@ function calcRaasScenario(params, solution) {
   const netAnnual = annualSavings - annualOpex;
 
   let payback = Infinity;
-  let cumulative = 0;
+  let cumulative = -purchaseOptionPrice;
   for (let y = 1; y <= horizon; y++) {
     cumulative += netAnnual;
     if (cumulative >= 0 && payback === Infinity) {
-      payback = y - 1 + (Math.abs(cumulative - netAnnual) / netAnnual);
+      payback = y - 1 + (purchaseOptionPrice - (y > 1 ? netAnnual * (y - 1) : 0)) / netAnnual;
+      if (payback < 1) payback = 1;
     }
   }
 

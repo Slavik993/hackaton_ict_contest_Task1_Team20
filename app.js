@@ -1,4 +1,4 @@
-const state = {
+﻿const state = {
   currentStep: 1,
   selectedIndustry: null,
   selectedObjectType: null,
@@ -1117,7 +1117,19 @@ function calcEconomicsWith(params) {
 
 function calcScenarioLocal(params, solution) {
   var p = params;
-  var m = solution.metrics || {};
+  // Домен и метрики решения — ОБЩИЙ модуль (server == client)
+  var domain = CalcCore.detectDomain(p);
+  var rawMetrics = solution.metrics || {};
+  // 1) Доменная коррекция, 2) абсолютный потолок калибровки
+  var corrected = CalcCore.applyDomainCorrection(
+    safeFloat(rawMetrics.laborReduction, 0),
+    safeFloat(rawMetrics.productivityLift, 0),
+    domain
+  );
+  var m = Object.assign({}, rawMetrics, CalcCore.calibrateSolutionMetrics(corrected, domain));
+  var laborReduction = safeFloat(m.laborReduction, 0);
+  var productivityLift = safeFloat(m.productivityLift, 0);
+
   var operations = safeFloat(p.operations, 0);
   var staff = safeFloat(p.staff, 0);
   var salary = safeFloat(p.salary, 80000);
@@ -1134,39 +1146,14 @@ function calcScenarioLocal(params, solution) {
   var serviceCostPerMonth = safeFloat(m.serviceCostPerMonth, 0);
   var powerKw = safeFloat(m.powerKw, 0);
   var payload = safeFloat(m.payload, 0);
-  var laborReduction = safeFloat(m.laborReduction, 0);
-  var productivityLift = safeFloat(m.productivityLift, 0);
 
-// Domain correction multipliers for labor/productivity effect.
-  // Logistics/industrial solutions assume high repeatable throughput; in the
-  // social/medical sector clinical workflows are safety-critical and non-repeatable,
-  // so the achievable labor reduction is much lower (payback 3-7 years, not 3).
+  var isMedicalDomain = domain.isMedical;
+  var isFarmDomain = domain.isFarm;
+  var isConstructionDomain = domain.isConstruction;
+  var isEnergyDomain = domain.isEnergy;
+  var isSecurityDomain = domain.isSecurity;
   var objType = String(p.objectType || p.objectTypeName || p.object_type || '').toLowerCase();
   var industry = String(p.industry || p.industryId || p.industryName || '').toLowerCase();
-  var isMedicalDomain =
-    objType.indexOf('мед') !== -1 || objType.indexOf('medical') !== -1 || objType.indexOf('больниц') !== -1 ||
-    objType.indexOf('реабил') !== -1 || objType.indexOf('клиник') !== -1 || objType.indexOf('hospital') !== -1 ||
-    industry.indexOf('социал') !== -1 || industry.indexOf('мед') !== -1 || industry.indexOf('zdрав') !== -1 ||
-    industry === 'social' || objType === 'medical';
-  var isFarmDomain = objType.indexOf('ферм') !== -1 || objType.indexOf('farm') !== -1 || industry.indexOf('сельск') !== -1 || industry === 'agriculture';
-  var isConstructionDomain = objType.indexOf('строитель') !== -1 || objType.indexOf('construction') !== -1 || industry.indexOf('строитель') !== -1 || industry === 'construction';
-  var isEnergyDomain = objType.indexOf('энерг') !== -1 || objType.indexOf('energy') !== -1 || industry.indexOf('тэк') !== -1 || industry.indexOf('энерг') !== -1 || industry === 'energy';
-  var isSecurityDomain = objType.indexOf('охран') !== -1 || objType.indexOf('security') !== -1 || industry.indexOf('безопасн') !== -1 || industry === 'security';
-
-  // Медицина / соцсфера: клинические процессы safety-critical, не повторяемые.
-  // Целевой диапазон окупаемости 3–7 лет (как в Таблице 1 статьи).
-  if (isMedicalDomain) {
-    laborReduction *= 0.25;      // сильно режем (было 0.6 / 0.35)
-    productivityLift *= 0.20;
-  } else if (isFarmDomain) {
-    laborReduction *= 0.85; productivityLift *= 0.8;
-  } else if (isConstructionDomain) {
-    laborReduction *= 0.9; productivityLift *= 0.85;
-  } else if (isEnergyDomain) {
-    laborReduction *= 0.9; productivityLift *= 0.85;
-  } else if (isSecurityDomain) {
-    laborReduction *= 0.85; productivityLift *= 0.8;
-  }
 
   var floorFlatness = safeFloat(p.floorFlatness, 0);
   var noiseLevelDb = safeFloat(p.noiseLevelDb, 0);
@@ -1225,6 +1212,24 @@ function calcScenarioLocal(params, solution) {
 
   robotCount = Math.ceil(robotCount / Math.max(0.05, availability * utilization) * infraAdjustment);
 
+  // Размер парка под заявленный эффект по ФОТ (ОБЩАЯ функция, server == client):
+  // без этого экономия не связана с количеством роботов и показатели уходят
+  // в абсурд (2 робота «экономили» 45 млн ₽/год).
+  var laborFleet = CalcCore.requiredRobotsForLaborEffect(staff, laborReduction);
+  if (laborFleet > robotCount) robotCount = laborFleet;
+
+  // Эффект по ФОТ с учётом парка — ОБЩАЯ функция (server == client)
+  var laborEffect = CalcCore.computeLaborEffect({
+    laborReduction: laborReduction,
+    productivityLift: productivityLift,
+    robotCount: robotCount,
+    staff: staff,
+    annualLaborCost: annualLaborCost,
+  });
+
+  // Калибровка CAPEX по объёму партии — ОБЩАЯ функция (server == client)
+  capexPerUnit = CalcCore.calibrateCapexPerUnit(capexPerUnit, robotCount);
+
   var equipmentCost = robotCount * capexPerUnit;
   var infrastructureCost = equipmentCost * infraRatio;
   var softwareCost = equipmentCost * softwareRatio;
@@ -1239,7 +1244,13 @@ function calcScenarioLocal(params, solution) {
   var annualMaterials = equipmentCost * materialRatio;
   var annualRepair = equipmentCost * repairRatio / depreciationYears;
   var annualManagement = equipmentCost * managementRatio;
-  var totalAnnualOpex = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement;
+  // Обслуживание оборудования, остающегося в эксплуатации (2% CAPEX/год)
+  var residualEquipmentCost = equipmentCost * 0.02;
+  // OPEX по ТЗ: сервис + лицензии + электроэнергия + материалы + ремонт + управление.
+  // Остаточный ручной труд в OPEX НЕ вычитается — экономия ФОТ уже измеряется
+  // относительно базового сценария (иначе получается двойной счёт).
+  var robotOpexOnly = annualService + annualLicenses + annualElectricity + annualMaterials + annualRepair + annualManagement;
+  var totalAnnualOpex = robotOpexOnly + residualEquipmentCost;
 
   var annualDepreciation = totalCapex / depreciationYears;
 
@@ -1256,26 +1267,27 @@ function calcScenarioLocal(params, solution) {
     });
   }
 
-var laborSavings = annualLaborCost * laborReduction;
-  var productivityGain = annualLaborCost * productivityLift;
-  // Остаточный ручной труд, который продолжает выплачиваться после роботизации
-  var residualLaborShare = Math.max(0, 1 - laborReduction);
-  var residualLaborCost = annualLaborCost * residualLaborShare;
-  // Обслуживание старого оборудования, которое остаётся в OPEX
-  var residualEquipmentCost = equipmentCost * 0.02;
-  var totalAnnualOpexWithResidual = totalAnnualOpex + residualLaborCost + residualEquipmentCost;
+  // Эффект по ФОТ — уже посчитан в laborEffect (с привязкой к парку роботов)
+  var laborSavings = laborEffect.laborSavings;
+  var productivityGain = laborEffect.productivityGain;
+  var residualLaborShare = laborEffect.residualLaborShare;
+  var residualLaborCost = laborEffect.residualLaborCost;
   var annualSavings = laborSavings + productivityGain;
-  var netAnnualEffect = annualSavings - totalAnnualOpexWithResidual;
-  var netWithDepreciation = annualSavings - totalAnnualOpexWithResidual - annualDepreciation;
+  // Денежный поток проекта: экономия (относительно базового сценария) − OPEX.
+  // Остаточный ручной труд здесь НЕ вычитается — он уже учтён в экономии.
+  var annualNet = annualSavings - totalAnnualOpex;
+  var netWithDepreciation = annualNet - annualDepreciation;
+  var netAnnualEffect = netWithDepreciation;
 
-  var annualNet = annualSavings - totalAnnualOpexWithResidual;   // чистый денежный поток
-
-  // Срок окупаемости (простой)
-  var payback = 0;
+  // Срок окупаемости по ТЗ: CAPEX / (экономия − OPEX) — как на сервере
+  var payback = -1;
   if (annualNet > 0 && totalCapex > 0) {
     payback = totalCapex / annualNet;
-    if (!isFinite(payback) || payback < 0) payback = 0;
+    if (!isFinite(payback) || payback < 0) payback = -1;
+    // Как на сервере: срок окупаемости меньше 1 года не отображается
+    if (payback > 0 && payback < 1) payback = 1;
   }
+  var paybackWithinHorizon = payback > 0 && payback <= horizon;
 
   // ROI на горизонте расчёта (а не «магические 3 года»)
   // Формула по ТЗ: ROI = (накопленный эффект за горизонт − инвестиции) / инвестиции × 100%
@@ -1302,29 +1314,69 @@ var laborSavings = annualLaborCost * laborReduction;
     if (payback > 0 && payback < 3.0) payback = 3.0;
   }
 
+  // NPV: дисконтированный поток в постоянных ценах (инфляция учитывается
+  // в симуляторе, поэтому здесь потоки уровневые — иначе двойной учёт).
   var npv = -totalCapex;
   for (var yi = 1; yi <= horizon; yi++) {
-    var residualEscalated = residualLaborCost * Math.pow(1.05, yi - 1);
-    var opexThisYear = totalAnnualOpex + residualEscalated + residualEquipmentCost;
-    npv += (annualSavings - opexThisYear) / Math.pow(1 + discountRate, yi);
+    npv += annualNet / Math.pow(1 + discountRate, yi);
   }
   if (!isFinite(npv)) npv = 0;
 
+  // TCO по ТЗ: CAPEX + сумма OPEX за горизонт с учётом замены компонентов.
+  // Замена — по окончании срока амортизации (кратно сроку), только внутри горизонта.
+  var replacementYears = [];
+  for (var ry = depreciationYears; ry < horizon; ry += depreciationYears) {
+    replacementYears.push(ry);
+  }
+  var replacementCost = equipmentCost * 0.7;
   var tco = totalCapex;
   for (var tc = 1; tc <= horizon; tc++) {
-    var residualEscalatedTco = residualLaborCost * Math.pow(1.05, tc - 1);
-    var replacement = (tc % depreciationYears === 0) ? equipmentCost * 0.7 : 0;
-    tco += totalAnnualOpex + residualEscalatedTco + residualEquipmentCost + replacement;
+    tco += totalAnnualOpex + (replacementYears.indexOf(tc) !== -1 ? replacementCost : 0);
   }
+
+  // IRR и DPP — ОБЩИЙ модуль (server == client)
+  var cashflows = [-totalCapex];
+  for (var yc = 1; yc <= horizon; yc++) {
+    var cf = annualNet;
+    if (replacementYears.indexOf(yc) !== -1) cf -= replacementCost;
+    cashflows.push(cf);
+  }
+  var irr = FinMath.IRR(cashflows);
+  var dpp = FinMath.DPP(cashflows, discountRate);
+
+  var domainKey = isMedicalDomain ? 'medical' : (isFarmDomain ? 'farm' : (isConstructionDomain ? 'construction' : (isEnergyDomain ? 'energy' : (isSecurityDomain ? 'security' : 'general'))));
+  // Проверка реалистичности — ОБЩАЯ функция (server == client)
+  var realism = CalcCore.checkScenarioRealism({
+    robotCount: Math.ceil(robotCount),
+    totalCapex: totalCapex,
+    annualSavings: annualSavings,
+    laborLimitedByFleet: laborEffect.limitedByFleet,
+    requiredRobotCount: laborEffect.requiredRobotCount,
+    requestedLaborReduction: laborEffect.requestedLaborReduction,
+    payback: payback,
+    assumptions: { domain: domainKey },
+  }, p);
 
 return {
     capex: totalCapex,
     baseCapex: equipmentCost * (1 + infraRatio + softwareRatio + integrationRatio + trainingRatio + reserveRatio),
+    // OPEX по ТЗ (роботы + обслуживание остаточного оборудования) — совпадает
+    // с серверным расчётом (server == client)
     opex: totalAnnualOpex,
+    opexRobotsOnly: robotOpexOnly,
+    residualLaborCost: residualLaborCost,
+    residualLaborShare: residualLaborShare,
+    residualEquipmentCost: residualEquipmentCost,
     savings: annualSavings,
-    netAnnual: netAnnualEffect,
+    // Чистый годовой эффект — С амортизацией (как на сервере: netAnnualEffect)
+    netAnnual: netWithDepreciation,
+    // Денежный поток без амортизации (для payback/NPV)
+    annualNet: annualNet,
     netWithDepreciation: netWithDepreciation,
     payback: payback,
+    paybackWithinHorizon: paybackWithinHorizon,
+    irr: irr,
+    dpp: dpp,
     roi: roi3y,          // ROI за 3 года — то, что показывается как «ROI за 3 года»
     roi3y: roi3y,
     roiHorizon: roi,     // ROI на полном горизонте
@@ -1338,6 +1390,14 @@ return {
     annualDepreciation: annualDepreciation,
     depreciationSchedule: depreciationSchedule,
     infraAdjustment: infraAdjustment,
+    // Привязка эффекта к парку роботов
+    effectiveLaborReduction: laborEffect.effectiveLaborReduction,
+    effectiveProductivityLift: laborEffect.effectiveProductivityLift,
+    requestedLaborReduction: laborEffect.requestedLaborReduction,
+    requiredRobotCount: laborEffect.requiredRobotCount,
+    deploymentShare: laborEffect.deploymentShare,
+    laborLimitedByFleet: laborEffect.limitedByFleet,
+    realism: { warnings: realism.warnings, confidenceScore: realism.confidenceScore },
     capexBreakdown: {
       equipment: equipmentCost,
       infrastructure: infrastructureCost,
@@ -1538,15 +1598,70 @@ function buildResultsHTML() {
   html += '</div>';
 
   // Объяснение ключевых метрик — почему они важны и что рекомендовать
+  html += buildLaborEffectPanel(results);
   html += buildMetricsGlossaryHTML(results);
 
   html += buildScenarioComparisonTable(results);
   html += buildCapexBreakdown(results.purchaseScenario);
 
+  // Предупреждения о реалистичности расчёта
+  var warnings = results.purchaseScenario && results.purchaseScenario.realism
+    ? (results.purchaseScenario.realism.warnings || [])
+    : [];
+  if (warnings.length) {
+    html += '<div class="panel" style="margin-top:24px">';
+    html += '<div class="panel-title">Предупреждения по расчёту</div>';
+    warnings.forEach(function(w) {
+      var color = w.level === 'danger' ? 'var(--color-danger)' : 'var(--color-warning)';
+      var bg = w.level === 'danger' ? 'var(--color-danger-bg)' : 'var(--color-warning-bg)';
+      html += '<div style="padding:10px 14px;margin-bottom:8px;background:' + bg + ';border-left:3px solid ' + color +
+        ';border-radius:var(--radius-sm);font-size:0.8125rem;color:' + color + '">' + w.message + '</div>';
+    });
+    var conf = results.purchaseScenario.realism.confidenceScore;
+    if (conf != null) {
+      html += '<div style="font-size:0.75rem;color:var(--color-text-secondary)">Оценка достоверности расчёта: <strong>' +
+        conf + ' из 100</strong>. Чем ниже оценка, тем больше условных допущений в модели.</div>';
+    }
+    html += '</div>';
+  }
+
   if (results.warning) {
     html += '<div style="margin-top:12px;padding:12px 16px;background:var(--color-warning-bg);border-radius:var(--radius-sm);color:var(--color-warning);font-size:0.8125rem;font-weight:600">' + results.warning + '</div>';
   }
 
+  return html;
+}
+
+/**
+ * Блок «Эффект по ФОТ»: показывает, сколько сокращения труда заявил вендор
+ * и сколько реально достижимо с рассчитанным парком роботов.
+ */
+function buildLaborEffectPanel(results) {
+  var s = results.purchaseScenario;
+  if (!s || s.effectiveLaborReduction == null) return '';
+  var requested = Math.round((s.requestedLaborReduction || 0) * 100);
+  var effective = Math.round(s.effectiveLaborReduction * 100);
+  var required = s.requiredRobotCount || 0;
+  var html = '<div class="panel" style="margin-top:24px">';
+  html += '<div class="panel-title">Эффект по ФОТ и парк роботов</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px">';
+
+  html += '<div class="result-item"><div class="result-label">Заявлено в каталоге</div><div class="result-value">' +
+    requested + '%</div><div class="result-detail">сокращения трудозатрат</div></div>';
+  html += '<div class="result-item"><div class="result-label">Достижимо с этим парком</div><div class="result-value">' +
+    effective + '%</div><div class="result-detail">с учётом доменной коррекции и физики парка</div></div>';
+  html += '<div class="result-item"><div class="result-label">Парк роботов</div><div class="result-value">' +
+    formatNum(s.robotCount, 0) + '</div><div class="result-detail">' +
+    (required ? 'нужно ' + required + ' для заявленного эффекта' : 'по производительности') + '</div></div>';
+  html += '<div class="result-item"><div class="result-label">Остаточный ФОТ</div><div class="result-value">' +
+    formatCurrency(s.residualLaborCost || 0) + '</div><div class="result-detail">в год, ' +
+    (s.residualLaborShare != null ? formatNum(s.residualLaborShare * 100, 1) + '% штата' : '') + '</div></div>';
+
+  html += '</div>';
+  html += '<div style="font-size:0.75rem;color:var(--color-text-secondary);margin-top:10px">Один робот заменяет до ' +
+    formatNum(CalcCore.ROBOTS_PER_OPERATOR, 1) + ' оператора, поэтому фактическое сокращение ФОТ ограничено парком. ' +
+    'Остаточный ФОТ в OPEX не входит: годовая экономия уже измеряется относительно сценария «без роботизации».</div>';
+  html += '</div>';
   return html;
 }
 
@@ -1657,8 +1772,14 @@ function buildCapexBreakdown(purchaseScenario) {
   html += '<tr><td style="text-align:left">Материалы</td><td style="text-align:right">' + formatCurrency(ob.materials) + '</td></tr>';
   html += '<tr><td style="text-align:left">Ремонт</td><td style="text-align:right">' + formatCurrency(ob.repair) + '</td></tr>';
   html += '<tr><td style="text-align:left">Управление</td><td style="text-align:right">' + formatCurrency(ob.management) + '</td></tr>';
-  html += '<tr><td style="text-align:left;font-weight:700">Итого</td><td style="text-align:right;font-weight:700">' + formatCurrency(purchaseScenario.totalAnnualOpex || purchaseScenario.opex) + '</td></tr>';
+  html += '<tr><td style="text-align:left">Обслуживание остаточного оборудования</td><td style="text-align:right">' + formatCurrency(purchaseScenario.residualEquipmentCost || 0) + '</td></tr>';
+  html += '<tr><td style="text-align:left;font-weight:700">Итого OPEX</td><td style="text-align:right;font-weight:700">' + formatCurrency(purchaseScenario.totalAnnualOpex || purchaseScenario.opex) + '</td></tr>';
   html += '</tbody></table>';
+  html += '<div style="font-size:0.75rem;color:var(--color-text-secondary);margin-top:8px">Остаточный ручной труд (ФОТ, который продолжает выплачиваться): <strong>' +
+    formatCurrency(purchaseScenario.residualLaborCost || 0) + '/год</strong>' +
+    (purchaseScenario.residualLaborShare != null
+      ? ' (' + formatNum(purchaseScenario.residualLaborShare * 100, 1) + '% штата) — в OPEX не входит, экономия ФОТ уже учтена в годовой экономии.'
+      : '') + '</div>';
   html += '<div class="form-label" style="margin-bottom:8px;font-size:0.8125rem;font-weight:600;margin-top:16px">Амортизация</div>';
   if (purchaseScenario.assumptions) {
     html += '<div style="font-size:0.8125rem;color:var(--color-text-secondary)"><strong>Метод:</strong> ' + (purchaseScenario.assumptions.depreciationMethod === 'linear' ? 'Линейный' : 'Иной') + ' | <strong>Срок:</strong> ' + (purchaseScenario.assumptions.depreciationYears || 5) + ' лет | <strong>Годовая амортизация:</strong> ' + formatCurrency(purchaseScenario.annualDepreciation || 0) + '</div>';
