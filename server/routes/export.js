@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
 const router = express.Router();
+const { setAttachmentHeaders, datedFilename } = require('../utils/http-headers');
 
 router.post('/pdf', (req, res) => {
   const { params, solution } = req.body;
@@ -15,7 +16,7 @@ router.post('/pdf', (req, res) => {
     const objTypeName = (params.objectTypeName || 'Объект');
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="расчёт_роботизации_${new Date().toISOString().slice(0, 10)}.pdf"`);
+    setAttachmentHeaders(res, datedFilename('robotics_calc', 'pdf'), 'расчёт_роботизации_' + new Date().toISOString().slice(0, 10) + '.pdf');
 
     doc.pipe(res);
     doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e293b');
@@ -180,6 +181,10 @@ router.post('/excel', async (req, res) => {
       ws4.addRow(['Материалы', Math.round(result.purchaseScenario.annualMaterials), '₽/год']);
       ws4.addRow(['Ремонт', Math.round(result.purchaseScenario.annualRepair), '₽/год']);
       ws4.addRow(['Управление', Math.round(result.purchaseScenario.annualManagement), '₽/год']);
+      ws4.addRow(['Обслуживание остаточного оборудования', Math.round(result.purchaseScenario.residualEquipmentCost || 0), '₽/год']);
+      ws4.addRow(['Итого OPEX', Math.round(result.purchaseScenario.totalAnnualOpex), '₽/год']);
+      ws4.addRow([]);
+      ws4.addRow(['Остаточный ручной труд (в OPEX не входит)', Math.round(result.purchaseScenario.residualLaborCost || 0), '₽/год']);
       if (result.loanScenario && result.loanScenario.loanDetails) {
         ws4.addRow([]);
         ws4.addRow(['Кредит (RaaS/заём):', '', '']);
@@ -199,8 +204,9 @@ router.post('/excel', async (req, res) => {
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="расчёт_роботизации_${new Date().toISOString().slice(0, 10)}.xlsx"`);
-    await wb.write(res);
+    setAttachmentHeaders(res, datedFilename('robotics_calc', 'xlsx'), 'расчёт_роботизации_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+    // ExcelJS 4.x: запись в поток только через workbook.xlsx.write()
+    await wb.xlsx.write(res);
   } catch (e) {
     console.error('Excel export error:', e);
     res.status(500).json({ error: 'Ошибка генерации Excel', details: e.message });
