@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 data/platform.db
 data/platform.db-wal
 data/platform.db-shm
@@ -8,3 +8,7 @@ public/uploads/*
 *.log
 data/video-frames/
 tmp_frames/
+
+# Служебный мусор, случайно скопированный в каталог
+все_скрипты_программы.txt
+Spectral degeneracy*/
